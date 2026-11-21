@@ -325,6 +325,8 @@
       mainTab: 'SCHED',
       toast: null,
       liffDrawerOpen: false, // 統一的右側 LINE LIFF 模擬抽屜（不佔據日常工作空間）
+      liffRole: 'STAFF', // STAFF | MANAGER
+      liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
       employees: JSON.parse(JSON.stringify(INITIAL_UNIFIED_EMPLOYEES)),
 
       sched: {
@@ -920,12 +922,15 @@
       render();
     }
 
-    function managerSignOff(reqId, decision) {
+    function managerSignOff(reqId, decision, viaLine) {
       const req = App.liff.requests.find(r => r.id === reqId);
       if (!req || req.status !== 'PENDING') return;
-      const noteEl = document.getElementById('mgr-note-' + reqId);
+      const noteEl = document.getElementById((viaLine ? 'line-mgr-note-' : 'mgr-note-') + reqId);
       req.status = decision;
-      req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED' ? '已核准，系統已同步排班與假別餘額' : '當日人力不足，請另行協調');
+      if (viaLine) req.signedVia = 'LINE';
+      req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
+        ? (viaLine ? '已透過 LINE 核准並同步排班與假別餘額' : '已核准，系統已同步排班與假別餘額')
+        : (viaLine ? '已透過 LINE 駁回，請另行協調' : '當日人力不足，請另行協調'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         if (req.kind === 'LEAVE') {
@@ -951,6 +956,24 @@
           App.toast = `已核准調班，${req.date.slice(5)} 排班時間條已即時互換。`;
         }
       } else { App.toast = `已駁回 ${emp.name} 之申請。`; }
+      render();
+    }
+
+    function openLineManagerApproval(filter) {
+      App.liffRole = 'MANAGER';
+      if (filter) App.liffMgrFilter = filter;
+      App.liffDrawerOpen = true;
+      render();
+    }
+
+    function approveAllPendingViaLine() {
+      const pendingLeave = App.liff.requests.filter(r => r.status === 'PENDING');
+      const pendingPunch = App.attendance.corrections.filter(c => c.status === 'PENDING');
+      const total = pendingLeave.length + pendingPunch.length;
+      if (total === 0) { App.toast = '目前沒有待簽核項目。'; render(); return; }
+      pendingLeave.forEach(r => managerSignOff(r.id, 'APPROVED', true));
+      pendingPunch.forEach(c => reviewMissedPunch(c.id, 'APPROVED', true));
+      App.toast = `店長已透過 LINE 一鍵核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`;
       render();
     }
 
@@ -1007,12 +1030,15 @@
       render();
     }
 
-    function reviewMissedPunch(mpId, decision) {
+    function reviewMissedPunch(mpId, decision, viaLine) {
       const req = App.attendance.corrections.find(c => c.id === mpId);
       if (!req || req.status !== 'PENDING') return;
-      const noteEl = document.getElementById('mp-note-' + mpId);
+      const noteEl = document.getElementById((viaLine ? 'line-mp-note-' : 'mp-note-') + mpId);
       req.status = decision;
-      req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED' ? '核對無誤，准予補登' : '時間與紀錄不符');
+      if (viaLine) req.signedVia = 'LINE';
+      req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
+        ? (viaLine ? '已透過 LINE 核對無誤，准予補登' : '核對無誤，准予補登')
+        : (viaLine ? '已透過 LINE 駁回，時間與紀錄不符' : '時間與紀錄不符'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         let log = App.attendance.logs.find(l => l.id === req.logId || (l.employeeId === req.employeeId && l.date === req.date));
@@ -2337,7 +2363,10 @@
                 <h2 class="text-sm font-bold text-slate-900">店長線上簽核中心（請假單 & 調班單）</h2>
                 <p class="text-xs text-slate-500 mt-0.5">核准後自動扣除假別餘額、更新排班時間軸與薪資結算</p>
               </div>
-              <div class="flex items-center gap-1.5 text-xs font-semibold">
+              <div class="flex items-center gap-1.5 flex-wrap text-xs font-semibold">
+                <button onclick="openLineManagerApproval('LEAVE')" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">
+                  ${ICONS.smartphone} 開啟 LINE 店長簽核
+                </button>
                 ${[{ k: 'ALL', l: `全部 (${App.liff.requests.length})` }, { k: 'PENDING', l: `待簽核 (${pendingCnt})` }, { k: 'LEAVE', l: '請假' }, { k: 'SWAP', l: '調班' }].map(f => `
                   <button onclick="App.liff.managerFilter='${f.k}';render()" class="px-3 py-1.5 rounded-lg border cursor-pointer ${App.liff.managerFilter===f.k?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200 text-slate-600'}">${f.l}</button>
                 `).join('')}
@@ -2429,7 +2458,12 @@
                 <h2 class="text-sm font-bold text-slate-900">漏打卡補卡簽核中心</h2>
                 <p class="text-xs text-slate-500">核准後自動補齊出勤時間（精確至分鐘），並同步解除薪資暫扣</p>
               </div>
-              <span class="px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold">待審補卡 ${pendingMpCnt} 筆</span>
+              <div class="flex items-center gap-2 flex-wrap">
+                <button onclick="openLineManagerApproval('PUNCH')" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-xs font-bold cursor-pointer">
+                  ${ICONS.smartphone} 開啟 LINE 店長簽核
+                </button>
+                <span class="px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold">待審補卡 ${pendingMpCnt} 筆</span>
+              </div>
             </div>
             <div class="space-y-2.5">
               ${a.corrections.map(c => {
@@ -2811,6 +2845,126 @@
     // ============================================================================
     // 6. 右側滑出式 LINE LIFF 員工模擬抽屜 (不佔用日常管理介面)
     // ============================================================================
+    function renderLineManagerApprovalContent() {
+      const pendingLeave = App.liff.requests.filter(r => r.status === 'PENDING');
+      const pendingPunch = App.attendance.corrections.filter(c => c.status === 'PENDING');
+      const totalPending = pendingLeave.length + pendingPunch.length;
+      const f = App.liffMgrFilter || 'ALL';
+      const showLeave = f === 'ALL' || f === 'LEAVE';
+      const showPunch = f === 'ALL' || f === 'PUNCH';
+      const doneItems = [
+        ...App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
+          const e = App.employees.find(x => x.id === r.employeeId);
+          return { kind: r.kind === 'LEAVE' ? '請假單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia };
+        }),
+        ...App.attendance.corrections.filter(c => c.status !== 'PENDING').map(c => {
+          const e = App.employees.find(x => x.id === c.employeeId);
+          return { kind: '補卡單', name: e ? e.name : '', date: c.date, status: c.status, note: c.managerNote, via: c.signedVia };
+        }),
+      ];
+
+      return `
+        <!-- LINE 官方帳號簽核推播通知列 -->
+        <div class="rounded-xl bg-[#7494C0]/15 border border-slate-200 p-3 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-6 h-6 rounded-full bg-[#06C755] text-white font-bold text-[10px] flex items-center justify-center">LINE</span>
+              <div>
+                <div class="font-bold text-slate-900">ShiftCraft 店長簽核推播</div>
+                <div class="text-[10px] text-slate-500">${App.storeSettings.name} · 即時同步後台</div>
+              </div>
+            </div>
+            ${totalPending > 0 ? `<button onclick="approveAllPendingViaLine()" class="px-2.5 py-1 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-[11px] font-bold cursor-pointer">一鍵全核准 (${totalPending})</button>` : ''}
+          </div>
+
+          <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
+            <button onclick="App.liffMgrFilter='ALL';render()" class="py-1 rounded-md cursor-pointer ${f==='ALL'?'bg-[#06C755] text-white':'text-slate-600'}">全部待簽 (${totalPending})</button>
+            <button onclick="App.liffMgrFilter='LEAVE';render()" class="py-1 rounded-md cursor-pointer ${f==='LEAVE'?'bg-[#06C755] text-white':'text-slate-600'}">請假調班 (${pendingLeave.length})</button>
+            <button onclick="App.liffMgrFilter='PUNCH';render()" class="py-1 rounded-md cursor-pointer ${f==='PUNCH'?'bg-[#06C755] text-white':'text-slate-600'}">漏卡補登 (${pendingPunch.length})</button>
+          </div>
+        </div>
+
+        ${totalPending === 0 ? `
+          <div class="bg-white rounded-xl border border-emerald-200 p-5 text-center space-y-1.5">
+            <div class="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 mx-auto">${ICONS.check}</div>
+            <div class="font-bold text-slate-900">所有待簽核項目皆已完成</div>
+            <div class="text-[11px] text-slate-500">員工送出新請假、調班或補卡單時，將即時推播至此</div>
+          </div>
+        ` : ''}
+
+        <!-- 待簽核：請假單與調班單 Flex Cards -->
+        ${showLeave ? pendingLeave.map(req => {
+          const rEmp = App.employees.find(e => e.id === req.employeeId);
+          return `
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+              <div class="px-3.5 py-2.5 ${req.kind==='LEAVE'?'bg-teal-600':'bg-indigo-600'} text-white flex items-center justify-between">
+                <span class="font-bold text-[11px]">${req.kind==='LEAVE' ? '請假簽核通知' : '調班簽核通知'}</span>
+                <span class="mono-num text-[10px] opacity-90">${req.date}</span>
+              </div>
+              <div class="p-3.5 space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-slate-900 text-sm">${rEmp ? rEmp.name : ''} <span class="text-[11px] font-normal text-slate-500">(${rEmp ? rEmp.code : ''})</span></span>
+                  <span class="text-[10px] text-slate-400">${req.createdAt}</span>
+                </div>
+                <div class="font-semibold text-slate-800">${req.summary}</div>
+                <div class="text-[11px] text-slate-600">事由：${req.reason}</div>
+                <div class="p-2 rounded-lg bg-emerald-50 border border-emerald-200/80 text-[11px] text-emerald-800">${req.aiCheck}</div>
+                <input id="line-mgr-note-${req.id}" placeholder="LINE 簽核備註（選填）" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-[11px]" />
+                <div class="grid grid-cols-2 gap-2 pt-0.5">
+                  <button onclick="managerSignOff('${req.id}','REJECTED',true)" class="h-8 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold cursor-pointer">駁回</button>
+                  <button onclick="managerSignOff('${req.id}','APPROVED',true)" class="h-8 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">LINE 核准並同步</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('') : ''}
+
+        <!-- 待簽核：漏打卡補卡單 Flex Cards -->
+        ${showPunch ? pendingPunch.map(c => {
+          const cEmp = App.employees.find(e => e.id === c.employeeId);
+          const typeLabel = c.type === 'MISSING_IN' ? `補上班卡 ${c.reqIn}` : c.type === 'MISSING_OUT' ? `補下班卡 ${c.reqOut}` : `補上下班 ${c.reqIn}–${c.reqOut}`;
+          return `
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+              <div class="px-3.5 py-2.5 bg-amber-600 text-white flex items-center justify-between">
+                <span class="font-bold text-[11px]">漏打卡補登簽核通知</span>
+                <span class="mono-num text-[10px] opacity-90">${c.date}</span>
+              </div>
+              <div class="p-3.5 space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-slate-900 text-sm">${cEmp ? cEmp.name : ''}</span>
+                  <span class="mono-num font-bold text-[#0F766E]">${typeLabel}</span>
+                </div>
+                <div class="text-[11px] text-slate-600">見證人：<strong>${c.witnessName}</strong></div>
+                <div class="text-[11px] text-slate-600">事由：${c.reason}</div>
+                <input id="line-mp-note-${c.id}" placeholder="LINE 查核備註（選填）" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-[11px]" />
+                <div class="grid grid-cols-2 gap-2 pt-0.5">
+                  <button onclick="reviewMissedPunch('${c.id}','REJECTED',true)" class="h-8 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold cursor-pointer">駁回</button>
+                  <button onclick="reviewMissedPunch('${c.id}','APPROVED',true)" class="h-8 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">LINE 核准補卡</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('') : ''}
+
+        <!-- 最近已簽核紀錄 -->
+        ${doneItems.length > 0 ? `
+          <div class="bg-white rounded-xl border border-slate-200 p-3 space-y-2">
+            <div class="font-bold text-slate-700 text-[11px] border-b border-slate-100 pb-1.5">最近已簽核紀錄</div>
+            ${doneItems.slice(0, 6).map(d => `
+              <div class="flex items-center justify-between gap-2 text-[11px] py-1 border-b border-slate-50 last:border-b-0">
+                <div class="min-w-0">
+                  <span class="font-bold text-slate-800">${d.name}</span>
+                  <span class="text-slate-500"> · ${d.kind} (${d.date})</span>
+                  ${d.via === 'LINE' ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-[#06C755]/15 text-[#059643] text-[10px] font-bold">via LINE</span>` : ''}
+                </div>
+                <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${d.status==='APPROVED'?'bg-emerald-50 text-emerald-700':'bg-rose-50 text-rose-700'}">${d.status==='APPROVED'?'已核准':'已駁回'}</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      `;
+    }
+
     function renderLiffDrawer() {
       const mode = App.mainTab === 'ATTENDANCE' ? 'ATT' : App.mainTab === 'LIFF_LEAVE' ? 'LEAVE' : App.mainTab === 'PAYROLL' ? 'PAYROLL' : 'SCHED';
       const empId = mode === 'ATT' ? App.attendance.liffEmpId : mode === 'LEAVE' ? App.liff.empId : mode === 'PAYROLL' ? App.payroll.liffEmpId : App.sched.liffEmpId;
@@ -2821,24 +2975,36 @@
       const empAtt = (App.payroll.attByMonth[mk] && App.payroll.attByMonth[mk][emp.id]) || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 };
       const slip = mode === 'PAYROLL' ? calcPayslip(emp, empAtt, mk) : null;
       const slipSignedAt = App.payroll.signed[mk + '_' + emp.id];
+      const isMgr = App.liffRole === 'MANAGER';
+      const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
 
       return `
         <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="App.liffDrawerOpen=false;render()">
           <aside class="w-full max-w-[380px] bg-[#F4F5F7] h-full shadow-2xl flex flex-col border-l border-slate-200" onclick="event.stopPropagation()">
             <div class="bg-[#06C755] text-white p-4 space-y-2.5">
               <div class="flex justify-between items-center text-xs">
-                <span class="font-bold">LINE LIFF 員工端模擬器</span>
+                <span class="font-bold">${isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器'}</span>
                 <button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
               </div>
-              <select
-                onchange="const v=this.value;if('${mode}'==='ATT')App.attendance.liffEmpId=v;else if('${mode}'==='LEAVE')App.liff.empId=v;else if('${mode}'==='PAYROLL'){App.payroll.liffEmpId=v;App.payroll.selectedEmpId=v;}else App.sched.liffEmpId=v;render()"
-                class="w-full h-8 px-2.5 rounded-lg bg-black/20 border border-white/30 text-white text-xs font-bold cursor-pointer"
-              >
-                ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
-              </select>
+              <div class="grid grid-cols-2 gap-1 bg-black/15 p-1 rounded-lg text-[11px] font-bold">
+                <button onclick="App.liffRole='STAFF';render()" class="py-1 rounded-md transition cursor-pointer ${!isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">員工端</button>
+                <button onclick="App.liffRole='MANAGER';render()" class="py-1 rounded-md transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">
+                  <span>店長簽核</span>
+                  ${totalLinePending > 0 ? `<span class="px-1.5 py-0.2 rounded-full text-[10px] mono-num ${isMgr ? 'bg-rose-500 text-white' : 'bg-white text-[#059643]'}">${totalLinePending}</span>` : ''}
+                </button>
+              </div>
+              ${!isMgr ? `
+                <select
+                  onchange="const v=this.value;if('${mode}'==='ATT')App.attendance.liffEmpId=v;else if('${mode}'==='LEAVE')App.liff.empId=v;else if('${mode}'==='PAYROLL'){App.payroll.liffEmpId=v;App.payroll.selectedEmpId=v;}else App.sched.liffEmpId=v;render()"
+                  class="w-full h-8 px-2.5 rounded-lg bg-black/20 border border-white/30 text-white text-xs font-bold cursor-pointer"
+                >
+                  ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
+                </select>
+              ` : ''}
             </div>
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+              ${isMgr ? renderLineManagerApprovalContent() : `
               ${mode === 'PAYROLL' && slip ? `
                 <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
                   <div class="flex items-center justify-between">
@@ -3062,6 +3228,7 @@
                   `}
                 `;
               })() : ''}
+              `}
             </div>
           </aside>
         </div>
@@ -3827,9 +3994,36 @@
       '開早煮茶備料': { en: 'Opening Tea & Prep', ja: '開店抽出・仕込み' },
       '開早班與原物料驗收': { en: 'Opening & Inventory Check', ja: '早番・納品検収' },
       '符合 LINE 晚班意願': { en: 'Matches LINE Evening Pref', ja: 'LINE遅番希望と一致' },
+      '開啟 LINE 店長簽核': { en: 'Open LINE Manager Approval', ja: 'LINE店長承認を開く' },
+      'LINE 店長簽核模擬器': { en: 'LINE Manager Approval', ja: 'LINE 店長承認シミュレーター' },
+      '員工端': { en: 'Staff', ja: '従業員' },
+      '店長簽核': { en: 'Manager', ja: '店長承認' },
+      'ShiftCraft 店長簽核推播': { en: 'ShiftCraft Manager Push', ja: 'ShiftCraft 店長承認通知' },
+      '所有待簽核項目皆已完成': { en: 'All pending approvals completed', ja: '未承認項目はすべて処理済みです' },
+      '員工送出新請假、調班或補卡單時，將即時推播至此': { en: 'New leave, swap, or punch requests will be pushed here in real time', ja: '従業員から新しい休暇・交代・打刻修正申請が届くと即時通知されます' },
+      '請假簽核通知': { en: 'Leave Approval Request', ja: '休暇承認通知' },
+      '調班簽核通知': { en: 'Shift Swap Approval', ja: 'シフト交代承認通知' },
+      '漏打卡補登簽核通知': { en: 'Missed Punch Approval', ja: '打刻漏れ修正承認通知' },
+      'LINE 簽核備註（選填）': { en: 'LINE approval note (optional)', ja: 'LINE承認メモ（任意）' },
+      'LINE 查核備註（選填）': { en: 'LINE review note (optional)', ja: 'LINE確認メモ（任意）' },
+      'LINE 核准並同步': { en: 'Approve via LINE', ja: 'LINEで承認・同期' },
+      'LINE 核准補卡': { en: 'Approve Punch via LINE', ja: 'LINEで打刻修正承認' },
+      '最近已簽核紀錄': { en: 'Recent Approvals', ja: '最近の承認履歴' },
+      '補卡單': { en: 'Punch Fix', ja: '打刻修正' },
+      '目前沒有待簽核項目。': { en: 'No pending approval items.', ja: '未承認の項目はありません。' },
+      '已透過 LINE 核准並同步排班與假別餘額': { en: 'Approved via LINE; shifts & leave balances synced', ja: 'LINEで承認済・シフトと休暇残数を同期済' },
+      '已透過 LINE 駁回，請另行協調': { en: 'Rejected via LINE; please reschedule', ja: 'LINEで却下済・再調整してください' },
+      '已透過 LINE 核對無誤，准予補登': { en: 'Verified & punch fix approved via LINE', ja: 'LINEで確認済・打刻修正を承認' },
+      '已透過 LINE 駁回，時間與紀錄不符': { en: 'Rejected via LINE; time mismatch', ja: 'LINEで却下済・時刻不一致' },
     };
 
     const I18N_PATTERNS = [
+      [/^一鍵全核准 \((\d+)\)$/, { en: 'Approve All ($1)', ja: '一括承認 ($1)' }],
+      [/^全部待簽 \((\d+)\)$/, { en: 'All ($1)', ja: '全未承認 ($1)' }],
+      [/^請假調班 \((\d+)\)$/, { en: 'Leave/Swap ($1)', ja: '休暇・交代 ($1)' }],
+      [/^漏卡補登 \((\d+)\)$/, { en: 'Punches ($1)', ja: '打刻修正 ($1)' }],
+      [/^(.+?) · 即時同步後台$/, { en: '$1 · Live Dashboard Sync', ja: '$1・管理画面と即時同期' }],
+      [/^店長已透過 LINE 一鍵核准 (\d+) 筆簽核單，班表、假別與薪資已同步更新。$/, { en: 'Manager approved $1 requests via LINE; shifts, leave & payroll synced.', ja: '店長がLINEで $1件を一括承認しました。シフト・休暇・給与に同期済。' }],
       [/^編制 (\d+) 人 \(外籍 (\d+)\)$/, { en: 'Staff: $1 (Foreign: $2)', ja: '在籍 $1名 (外国籍 $2)' }],
       [/^全店員工名冊 \((\d+)\)$/, { en: 'Staff Roster ($1)', ja: '全従業員名簿 ($1)' }],
       [/^已建檔員工名冊 \((\d+) 人\)$/, { en: 'Registered Staff ($1)', ja: '登録済スタッフ ($1名)' }],
