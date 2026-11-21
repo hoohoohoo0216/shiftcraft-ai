@@ -365,6 +365,10 @@
         selectedEmpId: 'emp-03',
         viewMode: 'OFFICIAL',
         showRulesBar: false,
+        showBankExportBar: false,
+        bankExportFormat: 'GENERIC',
+        bankPayDate: '2026-12-05',
+        bankOnlyValid: true,
         dispatched: { '2026-11_emp-01': true, '2026-11_emp-02': true, '2026-11_emp-03': true },
         signed: { '2026-11_emp-01': '2026-11-21 09:42' },
         liffEmpId: 'emp-03',
@@ -1031,6 +1035,105 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = 'ShiftCraft_勞基法出勤紀錄_2026-11.csv'; a.click(); URL.revokeObjectURL(url);
       App.toast = '已匯出符合勞基法第 30 條之出勤紀錄 CSV。';
+      render();
+    }
+
+    const BANK_PAYROLL_FORMATS = [
+      { code: 'GENERIC', short: '通用企業網銀', label: '通用企業網銀薪轉格式 (全銀行適用)' },
+      { code: 'CTBC', short: '中國信託 822', label: '中國信託 e-Cash 整批薪轉 (822)' },
+      { code: 'CATHAY', short: '國泰世華 013', label: '國泰世華 MyB2B 企業薪轉 (013)' },
+      { code: 'ESUN', short: '玉山銀行 808', label: '玉山銀行 企業網銀整批薪轉 (808)' },
+      { code: 'TAISHIN', short: '台新銀行 812', label: '台新銀行 企業網銀薪轉 (812)' },
+    ];
+
+    function getDefaultPayDate(monthKey) {
+      const [y, m] = (monthKey || '2026-11').split('-').map(Number);
+      const nextY = m === 12 ? y + 1 : y;
+      const nextM = m === 12 ? 1 : m + 1;
+      return `${nextY}-${String(nextM).padStart(2, '0')}-05`;
+    }
+
+    function csvEscapeCell(val) {
+      const s = String(val == null ? '' : val).replace(/\r?\n/g, ' ');
+      return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    }
+
+    function getPayrollBankRows(monthKey) {
+      const mk = monthKey || App.payroll.monthKey;
+      const attMap = App.payroll.attByMonth[mk] || {};
+      return App.employees.map((e, idx) => {
+        const slip = calcPayslip(e, attMap[e.id] || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 }, mk);
+        const bankCode = String(e.bankCode || '').trim();
+        const bankName = String(e.bankName || (TAIWAN_BANKS.find(b => b.code === bankCode)?.name || '')).trim();
+        const accountNumber = String(e.accountNumber || '').replace(/[\s-]/g, '').trim();
+        const holderName = String(e.accountHolder || (e.nationalityType === 'FOREIGN' && e.passportEnglishName ? e.passportEnglishName : e.name) || '').trim();
+        const nationalId = String(e.nationalId || '').trim().toUpperCase();
+        const issues = [];
+        if (!bankCode) issues.push('缺少銀行代碼');
+        if (!accountNumber) issues.push('缺少薪轉帳號');
+        if (slip.netPay <= 0) issues.push('實發金額為 $0');
+        return {
+          seq: idx + 1,
+          slip,
+          emp: e,
+          holderName,
+          bankCode,
+          bankName,
+          accountNumber,
+          nationalId,
+          netPay: slip.netPay,
+          valid: issues.length === 0,
+          issueText: issues.join('、'),
+        };
+      });
+    }
+
+    function exportPayrollBankCsv() {
+      const mk = App.payroll.monthKey;
+      const fmtCode = App.payroll.bankExportFormat || 'GENERIC';
+      const fmtMeta = BANK_PAYROLL_FORMATS.find(f => f.code === fmtCode) || BANK_PAYROLL_FORMATS[0];
+      const payDate = App.payroll.bankPayDate || getDefaultPayDate(mk);
+      const payDateCompact = payDate.replace(/-/g, '');
+      const memo = `${mk} 薪資`;
+      const allRows = getPayrollBankRows(mk);
+      const targetRows = App.payroll.bankOnlyValid ? allRows.filter(r => r.valid) : allRows;
+
+      if (targetRows.length === 0) {
+        App.toast = '目前沒有符合條件的可轉帳資料，請先至人資建檔補齊員工銀行帳號。';
+        render();
+        return;
+      }
+
+      let headers = [];
+      let rows = [];
+      if (fmtCode === 'CTBC') {
+        headers = ['入帳日期(YYYYMMDD)', '收款銀行代碼', '收款人帳號', '收款人戶名', '轉帳金額', '身分證統一編號', '員工編號', '備註附言'];
+        rows = targetRows.map(r => [payDateCompact, r.bankCode, r.accountNumber, r.holderName, r.netPay, r.nationalId, r.emp.code, memo]);
+      } else if (fmtCode === 'CATHAY') {
+        headers = ['付款日期', '收款銀行代號', '收款帳號', '收款人戶名', '身分證字號', '交易金額', '附言'];
+        rows = targetRows.map(r => [payDateCompact, r.bankCode, r.accountNumber, r.holderName, r.nationalId, r.netPay, memo]);
+      } else if (fmtCode === 'ESUN') {
+        headers = ['銀行代碼', '收款帳號', '戶名', '轉帳金額', '身分證/統一證號', '入帳日期', '摘要'];
+        rows = targetRows.map(r => [r.bankCode, r.accountNumber, r.holderName, r.netPay, r.nationalId, payDateCompact, memo]);
+      } else if (fmtCode === 'TAISHIN') {
+        headers = ['入帳日', '銀行代號', '收款帳號', '收款戶名', '金額', '身分證字號', '備註'];
+        rows = targetRows.map(r => [payDateCompact, r.bankCode, r.accountNumber, r.holderName, r.netPay, r.nationalId, memo]);
+      } else {
+        headers = ['序號', '入帳日期', '員工編號', '員工姓名', '收款人戶名', '身分證/居留證號', '收款銀行代碼', '收款銀行名稱', '收款帳號', '實發轉帳金額', '摘要附言'];
+        rows = targetRows.map((r, i) => [i + 1, payDate, r.emp.code, r.emp.name, r.holderName, r.nationalId, r.bankCode, r.bankName, r.accountNumber, r.netPay, memo]);
+      }
+
+      const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ShiftCraft_銀行薪轉_${mk}_${fmtCode}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      const totalAmt = targetRows.reduce((acc, r) => acc + r.netPay, 0);
+      App.toast = `已匯出 ${mk} 銀行薪轉 CSV（${fmtMeta.short} · 共 ${targetRows.length} 筆 · 總額 NT$${totalAmt.toLocaleString()}）。`;
       render();
     }
 
@@ -1958,13 +2061,18 @@
       const totAttDeduct = slips.reduce((a, b) => a + b.lateDeduct + b.missedHoldDeduct, 0);
       const totEmpCost = slips.reduce((a, b) => a + b.employerCost, 0);
       const pendingMissedReqs = App.attendance.corrections.filter(c => c.status === 'PENDING').length;
+      const bankRows = App.payroll.showBankExportBar ? getPayrollBankRows(mk) : [];
+      const bankValidRows = bankRows.filter(r => r.valid);
+      const bankExportRows = App.payroll.bankOnlyValid ? bankValidRows : bankRows;
+      const bankExportTotal = bankExportRows.reduce((a, b) => a + b.netPay, 0);
+      const bankIssueCount = bankRows.length - bankValidRows.length;
 
       return `
         <div class="space-y-4">
           <!-- 頂部控制列 -->
           <div class="no-print flex flex-wrap items-center justify-between gap-2 text-xs">
             <div class="flex items-center gap-2 flex-wrap">
-              <select onchange="App.payroll.monthKey=this.value;render()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
+              <select onchange="App.payroll.monthKey=this.value;App.payroll.bankPayDate=getDefaultPayDate(this.value);render()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
                 ${PAYROLL_MONTHS.map(m => `<option value="${m.key}" ${m.key===mk?'selected':''}>${m.label}</option>`).join('')}
               </select>
               <button onclick="App.payroll.showRulesBar=!App.payroll.showRulesBar;render()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">
@@ -1976,8 +2084,9 @@
                 </button>
               ` : ''}
             </div>
-            <div class="flex gap-2">
+            <div class="flex flex-wrap gap-2">
               <button onclick="window.print()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">${ICONS.printer} 列印</button>
+              <button onclick="App.payroll.showBankExportBar=!App.payroll.showBankExportBar;render()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg ${App.payroll.showBankExportBar ? 'bg-[#0F766E] text-white' : 'bg-slate-900 text-white hover:bg-slate-800'} font-semibold cursor-pointer">${ICONS.download} 輸出銀行薪轉 CSV</button>
               <button onclick="App.employees.forEach(e=>App.payroll.dispatched[App.payroll.monthKey+'_'+e.id]=true);App.payroll.viewMode='LINE_LIFF';App.toast='已發送全體 LINE 電子薪資條。';render()" class="h-8 px-3.5 rounded-lg bg-[#06C755] text-white font-semibold cursor-pointer">發送全體 LINE 薪資條</button>
             </div>
           </div>
@@ -2001,6 +2110,66 @@
                 <input type="checkbox" ${rules.missedPunchDisqualifiesBonus ? 'checked' : ''} onchange="App.payroll.rules.missedPunchDisqualifiesBonus=this.checked;render()" />
                 未核准漏卡暫停全勤獎金
               </label>
+            </div>
+          ` : ''}
+
+          ${App.payroll.showBankExportBar ? `
+            <div class="no-print bg-white border border-teal-200 rounded-xl p-4 space-y-3 text-xs">
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <div class="font-bold text-slate-900 text-sm">銀行整批薪轉 CSV 匯出</div>
+                  <div class="text-[11px] text-slate-500 mt-0.5">UTF-8 (含 BOM) 標準格式，自動帶入員工薪轉銀行代碼、帳號、戶名（外籍員工優先帶護照英文戶名）與本月實發淨額</div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="px-2.5 py-1 rounded-lg bg-teal-50 text-[#0F766E] font-bold mono-num">預計匯出 ${bankExportRows.length} 筆 · NT$${bankExportTotal.toLocaleString()}</span>
+                  <button onclick="exportPayrollBankCsv()" class="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">${ICONS.download} 立即下載薪轉 CSV</button>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-4">
+                <label class="flex items-center gap-1.5 font-semibold text-slate-700">銀行範本：
+                  <select onchange="App.payroll.bankExportFormat=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-bold cursor-pointer">
+                    ${BANK_PAYROLL_FORMATS.map(f => `<option value="${f.code}" ${App.payroll.bankExportFormat===f.code?'selected':''}>${f.label}</option>`).join('')}
+                  </select>
+                </label>
+                <label class="flex items-center gap-1.5 font-semibold text-slate-700">預計入帳日：
+                  <input type="date" value="${App.payroll.bankPayDate || getDefaultPayDate(mk)}" onchange="App.payroll.bankPayDate=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-bold" />
+                </label>
+                <label class="flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer">
+                  <input type="checkbox" ${App.payroll.bankOnlyValid ? 'checked' : ''} onchange="App.payroll.bankOnlyValid=this.checked;render()" />
+                  僅匯出帳號完整且實發 &gt; $0 之員工
+                </label>
+                ${bankIssueCount > 0 ? `<span class="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 font-semibold">尚有 ${bankIssueCount} 筆帳號缺漏或實發為 $0</span>` : `<span class="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-semibold">全體 ${bankValidRows.length} 筆帳號檢核通過</span>`}
+              </div>
+              <div class="overflow-x-auto border border-slate-100 rounded-lg">
+                <table class="w-full border-collapse text-left min-w-[640px] text-[11px]">
+                  <thead>
+                    <tr class="bg-slate-50 border-b border-slate-100 text-slate-500">
+                      <th class="p-2.5">員工</th>
+                      <th class="p-2.5">收款人戶名</th>
+                      <th class="p-2.5">銀行代碼與名稱</th>
+                      <th class="p-2.5">薪轉帳號</th>
+                      <th class="p-2.5 text-right">轉帳金額</th>
+                      <th class="p-2.5 text-right">檢核狀態</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${bankRows.map(r => `
+                      <tr class="border-b border-slate-100 last:border-b-0 ${r.valid ? '' : 'bg-rose-50/40'}">
+                        <td class="p-2.5 font-semibold text-slate-900">${r.emp.name} <span class="text-slate-400 mono-num">(${r.emp.code})</span></td>
+                        <td class="p-2.5 font-semibold text-slate-700">${r.holderName || '—'}</td>
+                        <td class="p-2.5 mono-num text-slate-600">${r.bankCode ? `${r.bankCode} ${r.bankName}` : '<span class="text-rose-600">未設定</span>'}</td>
+                        <td class="p-2.5 mono-num font-semibold text-slate-800">${r.accountNumber || '<span class="text-rose-600">缺少帳號</span>'}</td>
+                        <td class="p-2.5 mono-num text-right font-bold text-[#0F766E]">NT$${r.netPay.toLocaleString()}</td>
+                        <td class="p-2.5 text-right">
+                          ${r.valid
+                            ? `<span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold">可轉帳</span>`
+                            : `<span class="text-rose-600 font-semibold mr-1.5">${r.issueText}</span><button onclick="startEditHr('${r.emp.id}')" class="underline text-[#0F766E] font-bold cursor-pointer">補填</button>`}
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ` : ''}
 
