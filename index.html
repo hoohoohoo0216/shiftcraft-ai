@@ -74,6 +74,7 @@
       printer: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></svg>',
       mapPin: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
       store: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/><path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7"/></svg>',
+      camera: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
     };
 
     // ============================================================================
@@ -1360,7 +1361,7 @@
 
       const NAV_ITEMS = [
         { key: 'SCHED', label: '排班時間軸', icon: ICONS.calendar, perm: 'schedEdit' },
-        { key: 'HR', label: '人事建檔 OCR', icon: ICONS.users, perm: 'hrDocs' },
+        { key: 'HR', label: '人事建檔', icon: ICONS.users, perm: 'hrDocs' },
         { key: 'PAYROLL', label: '薪資結算', icon: ICONS.wallet, perm: 'payrollManage' },
         { key: 'LIFF_LEAVE', label: '請假調班簽核', icon: ICONS.inbox, perm: 'approveLeave', badge: pendingApprovals },
         { key: 'ATTENDANCE', label: '打卡與補卡', icon: ICONS.clock, perm: 'approvePunch', badge: pendingMissed },
@@ -1897,7 +1898,7 @@
                     </div>
                     <div class="grid grid-cols-2 gap-2 text-xs font-semibold">
                       <label class="h-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center cursor-pointer">上傳照片<input type="file" accept="image/*" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>runHrOcr('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
-                      <button type="button" onclick="runHrOcr('${s.key}', makeSampleDoc('${s.key}'))" class="h-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">範例 OCR</button>
+                      <label class="h-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center gap-1 cursor-pointer">${ICONS.camera} 拍照<input type="file" accept="image/*" capture="environment" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>runHrOcr('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
                     </div>
                   </div>
                 `).join('')}
@@ -3140,8 +3141,10 @@
       '營業中': { en: 'Open', ja: '営業中' },
       '排班時間軸': { en: 'Shift Timeline', ja: 'シフトタイムライン' },
       '排班時間軸 & AI 排班': { en: 'Shift Timeline & AI Scheduling', ja: 'シフト表・AIシフト作成' },
+      '人事建檔': { en: 'HR Onboarding', ja: '人事登録' },
       '人事建檔 OCR': { en: 'HR & Doc OCR', ja: '人事登録・OCR' },
       '人事建檔與證件 OCR': { en: 'HR Onboarding & Document OCR', ja: '人事登録・書類OCR' },
+      '拍照': { en: 'Take Photo', ja: '写真撮影' },
       '薪資結算': { en: 'Payroll', ja: '給与計算' },
       '薪資結算與全店薪資條': { en: 'Payroll & Store Payslips', ja: '給与計算・給与明細発行' },
       '請假調班簽核': { en: 'Leave & Swaps', ja: '休暇・シフト交代承認' },
