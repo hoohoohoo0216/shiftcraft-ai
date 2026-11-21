@@ -134,6 +134,36 @@
 
     const TW_LABOR_BRACKETS = [11100, 12540, 13500, 15840, 16500, 17280, 17880, 19047, 20008, 21000, 22000, 23100, 24000, 25250, 26400, 27600, 28590, 29500, 30300, 31800, 33300, 34800, 36300, 38200, 40100, 42000, 43900, 45800];
     const TW_NHI_BRACKETS = [28590, 29500, 30300, 31800, 33300, 34800, 36300, 38200, 40100, 42000, 43900, 45800, 48200, 50600, 53000, 55400, 57800, 60800, 63800, 66800, 69800, 72800, 76500, 80200];
+
+    function matchLaborBracket(estMonthly, empType) {
+      const floor = empType === 'FT' ? 28590 : 11100;
+      const target = Math.max(floor, Number(estMonthly) || 0);
+      for (const b of TW_LABOR_BRACKETS) if (target <= b) return b;
+      return TW_LABOR_BRACKETS[TW_LABOR_BRACKETS.length - 1];
+    }
+    function matchNhiBracket(estMonthly) {
+      const target = Math.max(TW_NHI_BRACKETS[0], Number(estMonthly) || 0);
+      for (const b of TW_NHI_BRACKETS) if (target <= b) return b;
+      return TW_NHI_BRACKETS[TW_NHI_BRACKETS.length - 1];
+    }
+    function getHrEstimatedMonthly(f) {
+      return f.type === 'FT'
+        ? (Number(f.baseSalary)||0)+(Number(f.meal)||0)+(Number(f.posAllow)||0)+(Number(f.skillAllow)||0)+(Number(f.transportAllow)||0)+(Number(f.splitAllow)||0)+(Number(f.attBonus)||0)
+        : (Number(f.hourlyRate)||0)*100;
+    }
+    function syncHrBracketsFromSalary(forceBoth) {
+      const f = App.hr.form;
+      const est = getHrEstimatedMonthly(f);
+      if (forceBoth || !f.laborBracketManual) {
+        f.laborBracket = matchLaborBracket(est, f.type);
+        if (forceBoth) f.laborBracketManual = false;
+      }
+      if (forceBoth || !f.nhiBracketManual) {
+        f.nhiBracket = matchNhiBracket(est);
+        if (forceBoth) f.nhiBracketManual = false;
+      }
+    }
+
     const ID_MAP = { A:10,B:11,C:12,D:13,E:14,F:15,G:16,H:17,I:34,J:18,K:19,L:20,M:21,N:22,O:35,P:23,Q:24,R:25,S:26,T:27,U:28,V:29,W:32,X:30,Y:31,Z:33 };
 
     function validateIdOrArc(raw) {
@@ -172,7 +202,7 @@
         stations: isF ? ['BAR', 'PREP'] : ['BAR', 'POS'], canKey: !isF,
         baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: isF ? 0 : 3000, posAllow: isF ? 0 : 2000,
         skillAllow: 0, transportAllow: 0, splitAllow: isF ? 0 : 1500, attBonus: isF ? 0 : 2000, perfBonus: isF ? 800 : 2500,
-        laborBracket: isF ? 19047 : 43900, nhiBracket: isF ? 28590 : 43900, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
+        laborBracket: isF ? 21000 : 42000, nhiBracket: isF ? 28590 : 42000, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
         bankCode: isF ? '700' : '822', bankName: isF ? '中華郵政 (郵局)' : '中國信託商業銀行',
         accountNumber: '', accountHolder: '', idFrontImg: '', idBackImg: '', workPermitImg: '', bankBookImg: '',
         color: isF ? '#0284C7' : '#0F766E'
@@ -833,7 +863,7 @@
       const netPay = Math.max(0, grossPay - totalDeduct);
       const employerPen6 = pensionMandatory ? Math.round(nhiB * 0.06) : 0;
       const employerIns = Math.round(laborB * 0.125 * 0.70) + Math.round(nhiB * 0.0517 * 0.60 * 1.56);
-      return { emp, att, sync, ordRate, basePay, fixedAllowOnly, attBonusEarned, attBonusStatus, attBonusReason, allowTotal, otPay, holidayPay, grossPay, laborEmp, nhiEmp, volPenAmt, leaveOnlyDeduct, lateDeduct, missedHoldDeduct, leaveDeduct, taxWithhold, totalDeduct, netPay, employerPen6, employerCost: grossPay + employerPen6 + employerIns, pensionMandatory, notes };
+      return { emp, att, sync, ordRate, basePay, fixedAllowOnly, attBonusEarned, attBonusStatus, attBonusReason, allowTotal, otPay, holidayPay, grossPay, laborB, nhiB, laborEmp, nhiEmp, volPenAmt, leaveOnlyDeduct, lateDeduct, missedHoldDeduct, leaveDeduct, taxWithhold, totalDeduct, netPay, employerPen6, employerCost: grossPay + employerPen6 + employerIns, pensionMandatory, notes };
     }
 
     // Leave & Swap
@@ -1071,20 +1101,115 @@
       App.storeSettings.permissions[roleCode][permKey] = !App.storeSettings.permissions[roleCode][permKey];
       render();
     }
+    function syncStationsCatalog() {
+      const keep = new Set(App.storeSettings.workstations.map(w => w.code));
+      Object.keys(STATIONS).forEach(k => { if (!keep.has(k)) delete STATIONS[k]; });
+      App.storeSettings.workstations.forEach(w => {
+        STATIONS[w.code] = {
+          code: w.code,
+          name: w.name,
+          shortName: w.shortName,
+          desc: w.desc || '',
+          badgeBg: w.badgeBg,
+          badgeText: w.badgeText,
+        };
+      });
+    }
+    function findWsColorKey(bg) {
+      return Object.keys(WS_COLOR_PALETTE).find(k => WS_COLOR_PALETTE[k].bg.toLowerCase() === String(bg || '').toLowerCase()) || 'TEAL';
+    }
     function addStoreWorkstation(e) {
       e.preventDefault();
       const d = App.storeSettings.workstationDraft;
       const code = (d.code || `ST${App.storeSettings.workstations.length + 1}`).trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
       if (!d.name.trim()) { App.toast = '請輸入工作站名稱。'; render(); return; }
+      if (App.storeSettings.workstations.some(w => w.code === code)) { App.toast = `工作站代碼「${code}」已存在，請更換代碼。`; render(); return; }
       const pal = WS_COLOR_PALETTE[d.colorKey] || WS_COLOR_PALETTE.PURPLE;
       App.storeSettings.workstations.push({
         code, name: d.name.trim(), shortName: (d.shortName || '').trim() || d.name.trim().slice(0, 4),
         desc: (d.desc || '').trim() || '門市作業站點', badgeBg: pal.bg, badgeText: pal.text,
         minMorning: 1, minLunchPeak: 1, minEvening: 1, requiresCert: false, active: true,
       });
-      STATIONS[code] = { code, name: d.name.trim(), shortName: (d.shortName || '').trim() || d.name.trim().slice(0, 4), desc: d.desc || '', badgeBg: pal.bg, badgeText: pal.text };
+      syncStationsCatalog();
       App.storeSettings.workstationDraft = { code: '', name: '', shortName: '', desc: '', colorKey: 'SKY' };
-      App.toast = `已新增工作站「${d.name.trim()}」，同步至排班選單。`;
+      App.toast = `已新增工作站「${d.name.trim()} (${code})」，已同步至排班時間軸。`;
+      render();
+    }
+    function startEditWorkstation(code) {
+      const ws = App.storeSettings.workstations.find(w => w.code === code);
+      if (!ws) return;
+      App.storeSettings.confirmDeleteWsCode = null;
+      App.storeSettings.editingWsCode = code;
+      App.storeSettings.editingWsDraft = {
+        code: ws.code,
+        name: ws.name,
+        shortName: ws.shortName,
+        desc: ws.desc || '',
+        colorKey: findWsColorKey(ws.badgeBg),
+        minMorning: ws.minMorning ?? 1,
+        minLunchPeak: ws.minLunchPeak ?? 1,
+        minEvening: ws.minEvening ?? 1,
+      };
+      render();
+    }
+    function cancelEditWorkstation() {
+      App.storeSettings.editingWsCode = null;
+      App.storeSettings.editingWsDraft = null;
+      render();
+    }
+    function saveEditWorkstation(e) {
+      e.preventDefault();
+      const code = App.storeSettings.editingWsCode;
+      const d = App.storeSettings.editingWsDraft;
+      const ws = App.storeSettings.workstations.find(w => w.code === code);
+      if (!ws || !d) return;
+      if (!d.name.trim()) { App.toast = '工作站名稱不可為空。'; render(); return; }
+      const pal = WS_COLOR_PALETTE[d.colorKey] || { bg: ws.badgeBg, text: ws.badgeText };
+      ws.name = d.name.trim();
+      ws.shortName = (d.shortName || '').trim() || ws.name.slice(0, 4);
+      ws.desc = (d.desc || '').trim() || '門市作業站點';
+      ws.badgeBg = pal.bg;
+      ws.badgeText = pal.text;
+      ws.minMorning = Math.max(0, Number(d.minMorning) || 0);
+      ws.minLunchPeak = Math.max(0, Number(d.minLunchPeak) || 0);
+      ws.minEvening = Math.max(0, Number(d.minEvening) || 0);
+      syncStationsCatalog();
+      App.storeSettings.editingWsCode = null;
+      App.storeSettings.editingWsDraft = null;
+      App.toast = `已更新工作站「${ws.name}」，排班時間軸名稱與色標已即時同步。`;
+      render();
+    }
+    function toggleWorkstationActive(code) {
+      const ws = App.storeSettings.workstations.find(w => w.code === code);
+      if (!ws) return;
+      ws.active = !ws.active;
+      App.toast = ws.active ? `已啟用工作站「${ws.name}」。` : `已停用工作站「${ws.name}」。`;
+      render();
+    }
+    function deleteStoreWorkstation(code) {
+      if (App.storeSettings.workstations.length <= 1) {
+        App.toast = '門市至少需保留 1 個工作站，無法全部刪除。';
+        App.storeSettings.confirmDeleteWsCode = null;
+        render();
+        return;
+      }
+      const ws = App.storeSettings.workstations.find(w => w.code === code);
+      App.storeSettings.workstations = App.storeSettings.workstations.filter(w => w.code !== code);
+      const fallbackCode = App.storeSettings.workstations[0].code;
+      App.employees.forEach(emp => {
+        if (Array.isArray(emp.stations)) emp.stations = emp.stations.filter(x => x !== code);
+      });
+      App.sched.shifts.forEach(s => {
+        if (s.station === code) s.station = fallbackCode;
+      });
+      if (App.sched.stationFilter === code) App.sched.stationFilter = 'ALL';
+      if (App.storeSettings.editingWsCode === code) {
+        App.storeSettings.editingWsCode = null;
+        App.storeSettings.editingWsDraft = null;
+      }
+      App.storeSettings.confirmDeleteWsCode = null;
+      syncStationsCatalog();
+      App.toast = `已刪除工作站「${ws ? ws.name : code}」，原排班站點已安全轉移至預設工作站。`;
       render();
     }
     function toggleEmployeeStationSkill(empId, stCode) {
@@ -1685,8 +1810,8 @@
                     ` : ''}
                     <div class="col-span-2">
                       <label class="block font-semibold text-slate-600 mb-1">${isF ? '統一證號 (ARC) *' : '身分證字號 *'}</label>
-                      <input value="${f.nationalId}" oninput="App.hr.form.nationalId=this.value.toUpperCase();render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold ${App.hr.ocrHits.nationalId?'ocr-filled':''}" />
-                      ${idVal ? `<div class="text-[11px] font-semibold mt-1 ${idVal.valid?'text-emerald-600':'text-rose-600'}">${idVal.msg}</div>` : ''}
+                      <input value="${f.nationalId}" oninput="App.hr.form.nationalId=this.value.toUpperCase();updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold ${App.hr.ocrHits.nationalId?'ocr-filled':''}" />
+                      <div id="hr-id-validation" class="text-[11px] font-semibold mt-1 ${idVal ? (idVal.valid?'text-emerald-600':'text-rose-600') : ''}">${idVal ? idVal.msg : ''}</div>
                     </div>
                     <div>
                       <label class="block font-semibold text-slate-600 mb-1">聯絡電話 / 手機 *</label>
@@ -1718,7 +1843,7 @@
                 <section class="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3 text-xs">
                   <div class="flex justify-between items-center border-b border-slate-100 pb-2">
                     <h3 class="text-sm font-bold text-slate-900">薪資結構與彈性工時設定</h3>
-                    <div class="inline-flex bg-slate-100 p-0.5 rounded-lg"><button type="button" onclick="App.hr.form.type='FT';render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='FT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">正職 FT</button><button type="button" onclick="App.hr.form.type='PT';render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='PT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">計時 PT</button></div>
+                    <div class="inline-flex bg-slate-100 p-0.5 rounded-lg"><button type="button" onclick="App.hr.form.type='FT';syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='FT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">正職 FT</button><button type="button" onclick="App.hr.form.type='PT';syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='PT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">計時 PT</button></div>
                   </div>
                   <div class="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
                     <div class="flex items-center justify-between">
@@ -1734,22 +1859,38 @@
                   </div>
                   <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                     ${f.type==='FT' ? `
-                      <div><label class="block font-semibold text-slate-600 mb-1">本薪 / 底薪</label><input type="number" value="${f.baseSalary||0}" oninput="App.hr.form.baseSalary=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">免稅伙食 (≤$3,000)</label><input type="number" max="3000" value="${f.meal||0}" oninput="App.hr.form.meal=Math.min(3000,Number(this.value)||0);render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">職務加給</label><input type="number" value="${f.posAllow||0}" oninput="App.hr.form.posAllow=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">技能 / 證照津貼</label><input type="number" value="${f.skillAllow||0}" oninput="App.hr.form.skillAllow=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">交通津貼</label><input type="number" value="${f.transportAllow||0}" oninput="App.hr.form.transportAllow=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">兩頭班空班津貼</label><input type="number" value="${f.splitAllow||0}" oninput="App.hr.form.splitAllow=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">全勤獎金</label><input type="number" value="${f.attBonus||0}" oninput="App.hr.form.attBonus=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">績效 / 業績獎金</label><input type="number" value="${f.perfBonus||0}" oninput="App.hr.form.perfBonus=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">本薪 / 底薪</label><input type="number" value="${f.baseSalary||0}" onfocus="this.select()" oninput="App.hr.form.baseSalary=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">免稅伙食 (≤$3,000)</label><input type="number" max="3000" value="${f.meal||0}" onfocus="this.select()" oninput="const v=Math.min(3000,Math.max(0,Number(this.value)||0));App.hr.form.meal=v;updateHrLiveSummary()" onchange="if(Number(this.value)>3000)this.value=3000;App.hr.form.meal=Math.min(3000,Math.max(0,Number(this.value)||0));updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">職務加給</label><input type="number" value="${f.posAllow||0}" onfocus="this.select()" oninput="App.hr.form.posAllow=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">技能 / 證照津貼</label><input type="number" value="${f.skillAllow||0}" onfocus="this.select()" oninput="App.hr.form.skillAllow=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">交通津貼</label><input type="number" value="${f.transportAllow||0}" onfocus="this.select()" oninput="App.hr.form.transportAllow=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">兩頭班空班津貼</label><input type="number" value="${f.splitAllow||0}" onfocus="this.select()" oninput="App.hr.form.splitAllow=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">全勤獎金</label><input type="number" value="${f.attBonus||0}" onfocus="this.select()" oninput="App.hr.form.attBonus=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">績效 / 業績獎金</label><input type="number" value="${f.perfBonus||0}" onfocus="this.select()" oninput="App.hr.form.perfBonus=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     ` : `
-                      <div><label class="block font-semibold text-slate-600 mb-1">計時時薪 (≥$196)</label><input type="number" value="${f.hourlyRate||0}" oninput="App.hr.form.hourlyRate=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">績效 / 達標獎金</label><input type="number" value="${f.perfBonus||0}" oninput="App.hr.form.perfBonus=Number(this.value)||0;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">計時時薪 (≥$196)</label><input type="number" value="${f.hourlyRate||0}" onfocus="this.select()" oninput="App.hr.form.hourlyRate=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">績效 / 達標獎金</label><input type="number" value="${f.perfBonus||0}" onfocus="this.select()" oninput="App.hr.form.perfBonus=Number(this.value)||0;updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     `}
-                    <div><label class="block font-semibold text-slate-600 mb-1">勞保投保級距 (上限$45,800)</label><select onchange="App.hr.form.laborBracket=Number(this.value);render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 mono-num font-semibold">${TW_LABOR_BRACKETS.map(b=>`<option value="${b}" ${(f.laborBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">健保投保級距 (最低$28,590)</label><select onchange="App.hr.form.nhiBracket=Number(this.value);render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 mono-num font-semibold">${TW_NHI_BRACKETS.map(b=>`<option value="${b}" ${(f.nhiBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select></div>
+                    <div>
+                      <div class="flex items-center justify-between mb-1">
+                        <label class="font-semibold text-slate-600">勞保級距 (上限$45,800)</label>
+                        ${f.laborBracketManual
+                          ? `<button type="button" onclick="App.hr.form.laborBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">手動・重帶</button>`
+                          : `<span class="text-[10px] text-emerald-700 font-semibold">自動帶入</span>`}
+                      </div>
+                      <select id="hr-labor-bracket-select" onchange="App.hr.form.laborBracket=Number(this.value);App.hr.form.laborBracketManual=true;render()" class="w-full h-9 px-2 rounded-lg border ${f.laborBracketManual?'border-amber-400 bg-amber-50/40':'border-slate-200'} mono-num font-semibold">${TW_LABOR_BRACKETS.map(b=>`<option value="${b}" ${(f.laborBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select>
+                    </div>
+                    <div>
+                      <div class="flex items-center justify-between mb-1">
+                        <label class="font-semibold text-slate-600">健保級距 (最低$28,590)</label>
+                        ${f.nhiBracketManual
+                          ? `<button type="button" onclick="App.hr.form.nhiBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">手動・重帶</button>`
+                          : `<span class="text-[10px] text-emerald-700 font-semibold">自動帶入</span>`}
+                      </div>
+                      <select id="hr-nhi-bracket-select" onchange="App.hr.form.nhiBracket=Number(this.value);App.hr.form.nhiBracketManual=true;render()" class="w-full h-9 px-2 rounded-lg border ${f.nhiBracketManual?'border-amber-400 bg-amber-50/40':'border-slate-200'} mono-num font-semibold">${TW_NHI_BRACKETS.map(b=>`<option value="${b}" ${(f.nhiBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select>
+                    </div>
                     <div><label class="block font-semibold text-slate-600 mb-1">勞退自提比例</label><select onchange="App.hr.form.volPension=Number(this.value);render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 mono-num font-semibold"><option value="0" ${(f.volPension||0)===0?'selected':''}>0% (不自提)</option><option value="0.03" ${f.volPension===0.03?'selected':''}>3%</option><option value="0.06" ${f.volPension===0.06?'selected':''}>6% (上限)</option></select></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">眷屬健保人數</label><input type="number" min="0" max="5" value="${f.deps||0}" oninput="App.hr.form.deps=Math.max(0,Number(this.value)||0);render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">眷屬健保人數</label><input type="number" min="0" max="5" value="${f.deps||0}" onfocus="this.select()" oninput="App.hr.form.deps=Math.max(0,Number(this.value)||0);updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">薪轉銀行</label><select onchange="const b=TAIWAN_BANKS.find(x=>x.code===this.value);App.hr.form.bankCode=b.code;App.hr.form.bankName=b.name;render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 font-semibold">${TAIWAN_BANKS.map(b=>`<option value="${b.code}" ${f.bankCode===b.code?'selected':''}>${b.code} ${b.name}</option>`).join('')}</select></div>
                     <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">薪轉帳號</label><input value="${f.accountNumber||''}" oninput="App.hr.form.accountNumber=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold ${App.hr.ocrHits.accountNumber?'ocr-filled':''}" /></div>
                   </div>
@@ -1759,8 +1900,8 @@
               <!-- Sticky 底部儲存列 -->
               <div class="bg-white border border-[var(--border)] rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div class="flex items-center gap-4 font-semibold">
-                  <span class="text-slate-600">預估月薪：<strong class="text-slate-900 mono-num">NT$${fixedM.toLocaleString()}</strong></span>
-                  <span class="${taxRate>0?'text-rose-600':'text-[#0F766E]'}">所得稅預扣率：${taxRate}%</span>
+                  <span class="text-slate-600">預估月薪：<strong id="hr-live-monthly" class="text-slate-900 mono-num">NT$${fixedM.toLocaleString()}</strong></span>
+                  <span id="hr-live-tax" class="${taxRate>0?'text-rose-600':'text-[#0F766E]'}">所得稅預扣率：${taxRate}%</span>
                 </div>
                 <button type="submit" class="h-9 px-5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">
                   ${App.hr.editingId ? '儲存變更並同步全模組' : '確認建檔並同步排班與薪資'}
@@ -1932,7 +2073,8 @@
                     </div>
                     <div class="p-3 rounded-lg bg-slate-50 space-y-1.5">
                       <div class="font-bold text-rose-700 border-b border-slate-200 pb-1">應扣 (-$${active.totalDeduct.toLocaleString()})</div>
-                      <div class="flex justify-between"><span>勞健保自付</span><span>-$${(active.laborEmp+active.nhiEmp).toLocaleString()}</span></div>
+                      <div class="flex justify-between"><span>勞保自付 (級距$${(active.laborB||0).toLocaleString()})</span><span>-$${active.laborEmp.toLocaleString()}</span></div>
+                          <div class="flex justify-between"><span>健保自付 (級距$${(active.nhiB||0).toLocaleString()})</span><span>-$${active.nhiEmp.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>遲到扣款</span><span>-$${active.lateDeduct.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>漏卡暫扣</span><span>-$${active.missedHoldDeduct.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>請假/稅款</span><span>-$${(active.leaveOnlyDeduct+active.taxWithhold).toLocaleString()}</span></div>
@@ -2274,33 +2416,126 @@
             </div>
           ` : ''}
 
-          ${st.subTab === 'STATIONS' ? `
+          ${st.subTab === 'STATIONS' ? (() => {
+            const activeWs = st.workstations.filter(w => w.active !== false);
+            const totM = activeWs.reduce((a, b) => a + (b.minMorning ?? 1), 0);
+            const totL = activeWs.reduce((a, b) => a + (b.minLunchPeak ?? 1), 0);
+            const totE = activeWs.reduce((a, b) => a + (b.minEvening ?? 1), 0);
+            return `
             <div class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4 text-xs">
-              <h2 class="text-sm font-bold text-slate-900 border-b border-slate-100 pb-3">門市工作站與人員技能配置</h2>
-              <form onsubmit="addStoreWorkstation(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[110px_1fr_110px_120px_auto] gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <input value="${st.workstationDraft.code}" oninput="App.storeSettings.workstationDraft.code=this.value.toUpperCase()" placeholder="代碼" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div>
+                  <h2 class="text-sm font-bold text-slate-900">門市工作站與人員技能配置 (${st.workstations.length} 站)</h2>
+                  <p class="text-[11px] text-slate-500 mt-0.5">可新增、編輯名稱與色標、設定早／午／晚最低人力或刪除站點，並即時同步排班時間軸</p>
+                </div>
+                <div class="flex items-center gap-1.5 flex-wrap font-semibold text-[11px]">
+                  <span class="px-2.5 py-1 rounded-md bg-teal-50 text-[#0F766E] border border-teal-200 mono-num">早班最低 ${totM} 人</span>
+                  <span class="px-2.5 py-1 rounded-md bg-amber-50 text-amber-800 border border-amber-200 mono-num">午尖峰最低 ${totL} 人</span>
+                  <span class="px-2.5 py-1 rounded-md bg-blue-50 text-blue-800 border border-blue-200 mono-num">晚班最低 ${totE} 人</span>
+                </div>
+              </div>
+
+              <form onsubmit="addStoreWorkstation(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[110px_1fr_110px_1fr_120px_auto] gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <input value="${st.workstationDraft.code}" oninput="App.storeSettings.workstationDraft.code=this.value.toUpperCase()" placeholder="代碼 (如 DELIVERY)" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
                 <input value="${st.workstationDraft.name}" oninput="App.storeSettings.workstationDraft.name=this.value" placeholder="工作站全稱" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold" />
                 <input value="${st.workstationDraft.shortName}" oninput="App.storeSettings.workstationDraft.shortName=this.value" placeholder="班表簡稱" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
-                <select onchange="App.storeSettings.workstationDraft.colorKey=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">${Object.keys(WS_COLOR_PALETTE).map(k => `<option value="${k}">${WS_COLOR_PALETTE[k].label}</option>`).join('')}</select>
-                <button type="submit" class="h-8 px-4 rounded-lg bg-[#0F766E] text-white font-semibold cursor-pointer">新增站點</button>
+                <input value="${st.workstationDraft.desc||''}" oninput="App.storeSettings.workstationDraft.desc=this.value" placeholder="作業職責說明 (選填)" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
+                <select onchange="App.storeSettings.workstationDraft.colorKey=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">${Object.keys(WS_COLOR_PALETTE).map(k => `<option value="${k}" ${st.workstationDraft.colorKey===k?'selected':''}>色標：${WS_COLOR_PALETTE[k].label}</option>`).join('')}</select>
+                <button type="submit" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">+ 新增站點</button>
               </form>
+
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                ${st.workstations.map(ws => `
-                  <div class="rounded-xl border border-slate-200 p-4 space-y-3">
-                    <div class="flex items-start justify-between">
-                      <div><span class="px-2 py-0.5 rounded-md font-bold text-[11px]" style="background:${ws.badgeBg};color:${ws.badgeText}">${ws.shortName}</span><div class="text-sm font-bold text-slate-900 mt-1">${ws.name}</div></div>
+                ${st.workstations.map(ws => {
+                  const isEditing = st.editingWsCode === ws.code && st.editingWsDraft;
+                  const isConfirmDel = st.confirmDeleteWsCode === ws.code;
+                  const isActive = ws.active !== false;
+                  if (isEditing) {
+                    const ed = st.editingWsDraft;
+                    return `
+                      <form onsubmit="saveEditWorkstation(event)" class="rounded-xl border-2 border-[#0F766E] bg-teal-50/30 p-4 space-y-3">
+                        <div class="flex items-center justify-between border-b border-teal-200/70 pb-2">
+                          <span class="font-bold text-slate-900">編輯工作站 <code class="mono-num text-[#0F766E]">${ws.code}</code></span>
+                          <button type="button" onclick="cancelEditWorkstation()" class="text-slate-500 hover:text-slate-800 font-semibold cursor-pointer">取消</button>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                          <div class="col-span-2">
+                            <label class="block text-[11px] font-semibold text-slate-600 mb-1">工作站全稱 *</label>
+                            <input value="${ed.name}" oninput="App.storeSettings.editingWsDraft.name=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white font-semibold" />
+                          </div>
+                          <div>
+                            <label class="block text-[11px] font-semibold text-slate-600 mb-1">班表簡稱</label>
+                            <input value="${ed.shortName}" oninput="App.storeSettings.editingWsDraft.shortName=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white" />
+                          </div>
+                          <div>
+                            <label class="block text-[11px] font-semibold text-slate-600 mb-1">標籤色標</label>
+                            <select onchange="App.storeSettings.editingWsDraft.colorKey=this.value" class="w-full h-8 px-2 rounded-lg border border-slate-300 bg-white font-semibold">
+                              ${Object.keys(WS_COLOR_PALETTE).map(k => `<option value="${k}" ${ed.colorKey===k?'selected':''}>${WS_COLOR_PALETTE[k].label}</option>`).join('')}
+                            </select>
+                          </div>
+                          <div class="col-span-2">
+                            <label class="block text-[11px] font-semibold text-slate-600 mb-1">作業職責說明</label>
+                            <input value="${ed.desc}" oninput="App.storeSettings.editingWsDraft.desc=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-300 bg-white" />
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-white border border-slate-200">
+                          <div>
+                            <label class="block text-[10px] font-semibold text-slate-500 mb-1">早班最低人數</label>
+                            <input type="number" min="0" max="15" value="${ed.minMorning}" onfocus="this.select()" oninput="App.storeSettings.editingWsDraft.minMorning=Math.max(0,Number(this.value)||0)" class="w-full h-8 px-2 rounded border border-slate-200 mono-num font-bold" />
+                          </div>
+                          <div>
+                            <label class="block text-[10px] font-semibold text-slate-500 mb-1">午尖峰最低人數</label>
+                            <input type="number" min="0" max="15" value="${ed.minLunchPeak}" onfocus="this.select()" oninput="App.storeSettings.editingWsDraft.minLunchPeak=Math.max(0,Number(this.value)||0)" class="w-full h-8 px-2 rounded border border-slate-200 mono-num font-bold" />
+                          </div>
+                          <div>
+                            <label class="block text-[10px] font-semibold text-slate-500 mb-1">晚班最低人數</label>
+                            <input type="number" min="0" max="15" value="${ed.minEvening}" onfocus="this.select()" oninput="App.storeSettings.editingWsDraft.minEvening=Math.max(0,Number(this.value)||0)" class="w-full h-8 px-2 rounded border border-slate-200 mono-num font-bold" />
+                          </div>
+                        </div>
+                        <div class="flex justify-end gap-2 pt-1">
+                          <button type="button" onclick="cancelEditWorkstation()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">取消</button>
+                          <button type="submit" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">儲存站點變更</button>
+                        </div>
+                      </form>
+                    `;
+                  }
+                  return `
+                    <div class="rounded-xl border border-slate-200 p-4 space-y-3 ${isActive ? '' : 'opacity-60 bg-slate-50/70'}">
+                      <div class="flex items-start justify-between gap-2">
+                        <div>
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="px-2 py-0.5 rounded-md font-bold text-[11px]" style="background:${ws.badgeBg};color:${ws.badgeText}">${ws.shortName} (${ws.code})</span>
+                            <span class="text-[10px] mono-num px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">早${ws.minMorning??1} / 午${ws.minLunchPeak??1} / 晚${ws.minEvening??1}</span>
+                          </div>
+                          <div class="text-sm font-bold text-slate-900 mt-1">${ws.name}</div>
+                          ${ws.desc ? `<div class="text-[11px] text-slate-500 mt-0.5">${ws.desc}</div>` : ''}
+                        </div>
+                        <div class="flex items-center gap-1 shrink-0">
+                          <button type="button" onclick="toggleWorkstationActive('${ws.code}')" class="px-2 py-1 rounded-md text-[11px] font-semibold cursor-pointer border ${isActive ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}">${isActive ? '啟用' : '停用'}</button>
+                          <button type="button" onclick="startEditWorkstation('${ws.code}')" class="px-2 py-1 rounded-md text-[11px] font-semibold cursor-pointer border border-slate-200 bg-white hover:bg-slate-50 text-slate-700">編輯</button>
+                          ${isConfirmDel ? `
+                            <button type="button" onclick="deleteStoreWorkstation('${ws.code}')" class="px-2 py-1 rounded-md text-[11px] font-bold cursor-pointer bg-rose-600 text-white">確認刪除</button>
+                            <button type="button" onclick="App.storeSettings.confirmDeleteWsCode=null;render()" class="px-1.5 py-1 rounded-md text-[11px] font-semibold cursor-pointer border border-slate-200 bg-white text-slate-600">取消</button>
+                          ` : `
+                            <button type="button" onclick="App.storeSettings.confirmDeleteWsCode='${ws.code}';render()" class="px-2 py-1 rounded-md text-[11px] font-semibold cursor-pointer border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700">刪除</button>
+                          `}
+                        </div>
+                      </div>
+                      <div class="space-y-1.5">
+                        <div class="text-[11px] text-slate-500 font-semibold">可安排上站人員（點擊切換資格）：</div>
+                        <div class="flex flex-wrap gap-1.5">
+                          ${App.employees.map(emp => {
+                            const has = (emp.stations || []).includes(ws.code);
+                            return `<button type="button" onclick="toggleEmployeeStationSkill('${emp.id}','${ws.code}')" class="px-2.5 py-1 rounded-md text-[11px] font-semibold cursor-pointer border ${has?'border-transparent':'bg-white border-slate-200 text-slate-500'}" style="${has ? `background:${ws.badgeBg};color:${ws.badgeText};` : ''}">${has ? '✓ ' : '+ '}${emp.name}</button>`;
+                          }).join('')}
+                        </div>
+                      </div>
                     </div>
-                    <div class="flex flex-wrap gap-1.5">
-                      ${App.employees.map(emp => {
-                        const has = (emp.stations || []).includes(ws.code);
-                        return `<button type="button" onclick="toggleEmployeeStationSkill('${emp.id}','${ws.code}')" class="px-2.5 py-1 rounded-md text-[11px] font-semibold cursor-pointer border ${has?'border-transparent':'bg-white border-slate-200 text-slate-500'}" style="${has ? `background:${ws.badgeBg};color:${ws.badgeText};` : ''}">${has ? '✓ ' : '+ '}${emp.name}</button>`;
-                      }).join('')}
-                    </div>
-                  </div>
-                `).join('')}
+                  `;
+                }).join('')}
               </div>
             </div>
-          ` : ''}
+          `;
+          })() : ''}
 
           ${st.subTab === 'RBAC' ? `
             <div class="space-y-4">
@@ -2657,6 +2892,42 @@
       `;
     }
 
+
+
+    function updateHrLiveSummary() {
+      const f = App.hr.form;
+      const isF = f.nationalityType === 'FOREIGN';
+      const fixedM = getHrEstimatedMonthly(f);
+      const taxRate = (isF && !f.isTaxResident183Days) ? (fixedM <= 44250 ? 6 : 18) : 0;
+      const mEl = document.getElementById('hr-live-monthly');
+      if (mEl) mEl.textContent = 'NT$' + fixedM.toLocaleString();
+      const tEl = document.getElementById('hr-live-tax');
+      if (tEl) {
+        tEl.textContent = '所得稅預扣率：' + taxRate + '%';
+        tEl.className = taxRate > 0 ? 'text-rose-600' : 'text-[#0F766E]';
+      }
+      // 依預估月薪自動帶入勞保與健保級距（若人資已手動指定則保留原選擇）
+      if (!f.laborBracketManual) {
+        f.laborBracket = matchLaborBracket(fixedM, f.type);
+        const lbSel = document.getElementById('hr-labor-bracket-select');
+        if (lbSel) lbSel.value = String(f.laborBracket);
+      }
+      if (!f.nhiBracketManual) {
+        f.nhiBracket = matchNhiBracket(fixedM);
+        const nbSel = document.getElementById('hr-nhi-bracket-select');
+        if (nbSel) nbSel.value = String(f.nhiBracket);
+      }
+      const idEl = document.getElementById('hr-id-validation');
+      if (idEl) {
+        const v = validateIdOrArc(f.nationalId);
+        if (v) {
+          idEl.textContent = v.msg;
+          idEl.className = 'text-[11px] font-semibold mt-1 ' + (v.valid ? 'text-emerald-600' : 'text-rose-600');
+        } else {
+          idEl.textContent = '';
+        }
+      }
+    }
 
     // 自動儲存操作資料至瀏覽器本機 (重新整理不遺失)
     const STORAGE_KEY = 'shiftcraft_ai_state_v1';
