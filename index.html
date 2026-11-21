@@ -462,6 +462,7 @@
           SHIFT_LEAD:    { schedEdit: true,  storeHours: false, hrDocs: false, payrollManage: false, approveLeave: false, approvePunch: true,  exportCsv: false, settingsAdmin: false },
           STAFF:         { schedEdit: false, storeHours: false, hrDocs: false, payrollManage: false, approveLeave: false, approvePunch: false, exportCsv: false, settingsAdmin: false },
         },
+        managerOnLeave: false,
         admins: [
           { id: 'adm-1', name: '吳承翰', title: '品牌創辦人 / 老闆', role: 'OWNER', contact: 'boss@shanbei-tea.tw', lineBound: true, scope: '全品牌所有門市', active: true },
           { id: 'adm-2', name: '許雅婷', title: '總部人資專員 (HR)', role: 'HR', contact: 'hr@shanbei-tea.tw', lineBound: true, scope: '北區 4 家門市', active: true },
@@ -922,15 +923,73 @@
       render();
     }
 
+    function getActiveLineApprover(targetDate) {
+      const dateStr = targetDate || App.sched.selectedDate || '2026-11-28';
+      const admins = App.storeSettings.admins || [];
+      const mgr = admins.find(a => a.role === 'STORE_MANAGER' && a.active) || { name: '周柏霖', title: '門市店長' };
+      if (!App.storeSettings.managerOnLeave) {
+        return { isDelegated: false, name: mgr.name, roleLabel: '店長', shiftLabel: '', managerName: mgr.name, dateStr };
+      }
+
+      // 店長休假時：優先尋找當天排班值勤中的副店長 (SHIFT_LEAD)
+      const shiftLeadAdmins = admins.filter(a => a.role === 'SHIFT_LEAD' && a.active);
+      const candidates = [
+        ...shiftLeadAdmins.map(a => ({ name: a.name, emp: App.employees.find(e => e.name === a.name), isLeadAdmin: true })),
+        ...App.employees
+          .filter(e => /副店|領班/.test(e.roleTitle || '') && !shiftLeadAdmins.some(a => a.name === e.name))
+          .map(e => ({ name: e.name, emp: e, isLeadAdmin: false })),
+      ];
+
+      for (const c of candidates) {
+        if (!c.emp) continue;
+        const sh = App.sched.shifts.find(s => s.employeeId === c.emp.id && s.date === dateStr);
+        const segs = getShiftSegments(sh);
+        if (segs.length > 0) {
+          const tpl = SHIFT_TEMPLATES[sh.shiftCode];
+          const shiftLabel = tpl ? `${tpl.shortLabel} (${segs.map(g => g.label).join(' / ')})` : segs.map(g => g.label).join(' / ');
+          return {
+            isDelegated: true,
+            name: c.name,
+            roleLabel: c.isLeadAdmin ? '值班副店長代理' : '當日值班領班代理',
+            shiftLabel,
+            managerName: mgr.name,
+            dateStr,
+          };
+        }
+      }
+
+      // 若該日副店長亦排休，退回第一位在職副店長或老闆代理
+      const fallbackLead = shiftLeadAdmins[0] || admins.find(a => a.role === 'OWNER' && a.active) || mgr;
+      return {
+        isDelegated: true,
+        name: fallbackLead.name,
+        roleLabel: fallbackLead.role === 'OWNER' ? '老闆代行' : '副店長代理',
+        shiftLabel: '當日無值班副店・自動順位代理',
+        managerName: mgr.name,
+        dateStr,
+      };
+    }
+
+    function toggleManagerOnLeave() {
+      App.storeSettings.managerOnLeave = !App.storeSettings.managerOnLeave;
+      const ap = getActiveLineApprover();
+      App.toast = App.storeSettings.managerOnLeave
+        ? `店長 ${ap.managerName} 已設為休假，LINE 簽核已自動轉派給當日值班副店長「${ap.name}」代理。`
+        : `店長 ${ap.managerName} 已恢復值勤，LINE 簽核已切回由店長本人處理。`;
+      render();
+    }
+
     function managerSignOff(reqId, decision, viaLine) {
       const req = App.liff.requests.find(r => r.id === reqId);
       if (!req || req.status !== 'PENDING') return;
+      const ap = getActiveLineApprover(App.sched.selectedDate);
       const noteEl = document.getElementById((viaLine ? 'line-mgr-note-' : 'mgr-note-') + reqId);
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
+      req.signedBy = `${ap.name} (${ap.roleLabel})`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
-        ? (viaLine ? '已透過 LINE 核准並同步排班與假別餘額' : '已核准，系統已同步排班與假別餘額')
-        : (viaLine ? '已透過 LINE 駁回，請另行協調' : '當日人力不足，請另行協調'));
+        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班與假別餘額') : '已核准，系統已同步排班與假別餘額')
+        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '當日人力不足，請另行協調'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         if (req.kind === 'LEAVE') {
@@ -971,9 +1030,12 @@
       const pendingPunch = App.attendance.corrections.filter(c => c.status === 'PENDING');
       const total = pendingLeave.length + pendingPunch.length;
       if (total === 0) { App.toast = '目前沒有待簽核項目。'; render(); return; }
+      const ap = getActiveLineApprover();
       pendingLeave.forEach(r => managerSignOff(r.id, 'APPROVED', true));
       pendingPunch.forEach(c => reviewMissedPunch(c.id, 'APPROVED', true));
-      App.toast = `店長已透過 LINE 一鍵核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`;
+      App.toast = ap.isDelegated
+        ? `值班副店長 ${ap.name} 已透過 LINE 代理核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`
+        : `店長已透過 LINE 一鍵核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`;
       render();
     }
 
@@ -1033,12 +1095,14 @@
     function reviewMissedPunch(mpId, decision, viaLine) {
       const req = App.attendance.corrections.find(c => c.id === mpId);
       if (!req || req.status !== 'PENDING') return;
+      const ap = getActiveLineApprover(App.sched.selectedDate);
       const noteEl = document.getElementById((viaLine ? 'line-mp-note-' : 'mp-note-') + mpId);
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
+      req.signedBy = `${ap.name} (${ap.roleLabel})`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
-        ? (viaLine ? '已透過 LINE 核對無誤，准予補登' : '核對無誤，准予補登')
-        : (viaLine ? '已透過 LINE 駁回，時間與紀錄不符' : '時間與紀錄不符'));
+        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准補登` : '已透過 LINE 核對無誤，准予補登') : '核對無誤，准予補登')
+        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回補登` : '已透過 LINE 駁回，時間與紀錄不符') : '時間與紀錄不符'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         let log = App.attendance.logs.find(l => l.id === req.logId || (l.employeeId === req.employeeId && l.date === req.date));
@@ -2354,6 +2418,7 @@
         return true;
       });
       const pendingCnt = App.liff.requests.filter(r => r.status === 'PENDING').length;
+      const activeAp = getActiveLineApprover(App.sched.selectedDate);
 
       return `
         <div class="space-y-4">
@@ -2364,6 +2429,9 @@
                 <p class="text-xs text-slate-500 mt-0.5">核准後自動扣除假別餘額、更新排班時間軸與薪資結算</p>
               </div>
               <div class="flex items-center gap-1.5 flex-wrap text-xs font-semibold">
+                <button onclick="toggleManagerOnLeave()" class="px-3 py-1.5 rounded-lg border cursor-pointer font-bold ${activeAp.isDelegated ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}">
+                  ${activeAp.isDelegated ? `店長休假中（${activeAp.name} 代理）` : '店長休假轉副店長簽'}
+                </button>
                 <button onclick="openLineManagerApproval('LEAVE')" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">
                   ${ICONS.smartphone} 開啟 LINE 店長簽核
                 </button>
@@ -2372,6 +2440,12 @@
                 `).join('')}
               </div>
             </div>
+            ${activeAp.isDelegated ? `
+              <div class="rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
+                <span>店長 <strong>${activeAp.managerName}</strong> 休假中 → 系統已自動將 LINE 簽核轉派給當日值班副店長 <strong>${activeAp.name}</strong>${activeAp.shiftLabel ? `（${activeAp.shiftLabel}）` : ''}</span>
+                <button onclick="toggleManagerOnLeave()" class="underline font-bold text-amber-800 cursor-pointer">恢復店長值勤</button>
+              </div>
+            ` : ''}
 
             <div class="space-y-3">
               ${filteredMgrReqs.map(req => {
@@ -2852,14 +2926,15 @@
       const f = App.liffMgrFilter || 'ALL';
       const showLeave = f === 'ALL' || f === 'LEAVE';
       const showPunch = f === 'ALL' || f === 'PUNCH';
+      const ap = getActiveLineApprover(App.sched.selectedDate);
       const doneItems = [
         ...App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
           const e = App.employees.find(x => x.id === r.employeeId);
-          return { kind: r.kind === 'LEAVE' ? '請假單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia };
+          return { kind: r.kind === 'LEAVE' ? '請假單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia, signedBy: r.signedBy };
         }),
         ...App.attendance.corrections.filter(c => c.status !== 'PENDING').map(c => {
           const e = App.employees.find(x => x.id === c.employeeId);
-          return { kind: '補卡單', name: e ? e.name : '', date: c.date, status: c.status, note: c.managerNote, via: c.signedVia };
+          return { kind: '補卡單', name: e ? e.name : '', date: c.date, status: c.status, note: c.managerNote, via: c.signedVia, signedBy: c.signedBy };
         }),
       ];
 
@@ -2875,6 +2950,25 @@
               </div>
             </div>
             ${totalPending > 0 ? `<button onclick="approveAllPendingViaLine()" class="px-2.5 py-1 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-[11px] font-bold cursor-pointer">一鍵全核准 (${totalPending})</button>` : ''}
+          </div>
+
+          <!-- 目前簽核人與店長休假自動轉派卡 -->
+          <div class="rounded-lg p-2.5 border ${ap.isDelegated ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'} space-y-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-[11px] font-bold ${ap.isDelegated ? 'text-amber-900' : 'text-slate-800'}">
+                目前簽核人：${ap.name} <span class="font-semibold ${ap.isDelegated ? 'text-amber-700' : 'text-[#0F766E]'}">(${ap.roleLabel})</span>
+              </div>
+              <button onclick="toggleManagerOnLeave()" class="px-2 py-0.5 rounded-md text-[10px] font-bold cursor-pointer ${ap.isDelegated ? 'bg-amber-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}">
+                ${ap.isDelegated ? '恢復店長值勤' : '模擬店長休假'}
+              </button>
+            </div>
+            ${ap.isDelegated ? `
+              <div class="text-[10px] text-amber-800 leading-relaxed">
+                店長 ${ap.managerName} 休假中 → 已自動轉派 ${ap.dateStr.slice(5)} 值班副店長 <strong>${ap.name}</strong> 代理簽核${ap.shiftLabel ? `（${ap.shiftLabel}）` : ''}
+              </div>
+            ` : `
+              <div class="text-[10px] text-slate-500">店長值勤中；若店長休假，系統將自動轉給當日值班副店長於 LINE 代理簽核</div>
+            `}
           </div>
 
           <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
@@ -2955,7 +3049,7 @@
                 <div class="min-w-0">
                   <span class="font-bold text-slate-800">${d.name}</span>
                   <span class="text-slate-500"> · ${d.kind} (${d.date})</span>
-                  ${d.via === 'LINE' ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-[#06C755]/15 text-[#059643] text-[10px] font-bold">via LINE</span>` : ''}
+                  ${d.signedBy ? `<div class="text-[10px] text-slate-500">簽核人：${d.signedBy}${d.via === 'LINE' ? ` <span class="ml-1 px-1.5 py-0.5 rounded bg-[#06C755]/15 text-[#059643] font-bold">via LINE</span>` : ''}</div>` : (d.via === 'LINE' ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-[#06C755]/15 text-[#059643] text-[10px] font-bold">via LINE</span>` : '')}
                 </div>
                 <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${d.status==='APPROVED'?'bg-emerald-50 text-emerald-700':'bg-rose-50 text-rose-700'}">${d.status==='APPROVED'?'已核准':'已駁回'}</span>
               </div>
@@ -4015,9 +4109,26 @@
       '已透過 LINE 駁回，請另行協調': { en: 'Rejected via LINE; please reschedule', ja: 'LINEで却下済・再調整してください' },
       '已透過 LINE 核對無誤，准予補登': { en: 'Verified & punch fix approved via LINE', ja: 'LINEで確認済・打刻修正を承認' },
       '已透過 LINE 駁回，時間與紀錄不符': { en: 'Rejected via LINE; time mismatch', ja: 'LINEで却下済・時刻不一致' },
+      '模擬店長休假': { en: 'Simulate Mgr Off', ja: '店長休暇を模擬' },
+      '恢復店長值勤': { en: 'Manager Back On Duty', ja: '店長勤務に戻す' },
+      '店長休假轉副店長簽': { en: 'Manager Off → Shift Lead', ja: '店長休暇→副店長代理' },
+      '店長值勤中；若店長休假，系統將自動轉給當日值班副店長於 LINE 代理簽核': {
+        en: 'Manager on duty. If manager is off, LINE approvals auto-route to the on-duty Shift Lead.',
+        ja: '店長勤務中。店長休暇時は当日の出勤副店長へLINE承認が自動転送されます。',
+      },
+      '值班副店長代理': { en: 'On-Duty Shift Lead Proxy', ja: '当番副店長代理' },
+      '當日值班領班代理': { en: 'On-Duty Floor Lead Proxy', ja: '当番リーダー代理' },
+      '副店長代理': { en: 'Shift Lead Proxy', ja: '副店長代理' },
+      '老闆代行': { en: 'Owner Proxy', ja: 'オーナー代行' },
     };
 
     const I18N_PATTERNS = [
+      [/^目前簽核人：(.+)$/, { en: 'Current Approver: $1', ja: '現在の承認者：$1' }],
+      [/^簽核人：(.+)$/, { en: 'Approved by: $1', ja: '承認者：$1' }],
+      [/^店長休假中（(.+?) 代理）$/, { en: 'Manager Off ($1 Proxy)', ja: '店長休暇中（$1 代理）' }],
+      [/^店長 (.+?) 已設為休假，LINE 簽核已自動轉派給當日值班副店長「(.+?)」代理。$/, { en: 'Manager $1 is on leave; LINE approvals auto-delegated to on-duty Shift Lead "$2".', ja: '店長 $1 を休暇に設定しました。LINE承認は当番副店長「$2」へ自動転送されます。' }],
+      [/^店長 (.+?) 已恢復值勤，LINE 簽核已切回由店長本人處理。$/, { en: 'Manager $1 is back on duty; LINE approvals routed back to Store Manager.', ja: '店長 $1 が勤務に復帰しました。LINE承認は店長本人へ戻されました。' }],
+      [/^值班副店長 (.+?) 已透過 LINE 代理核准 (\d+) 筆簽核單，班表、假別與薪資已同步更新。$/, { en: 'Shift Lead $1 approved $2 requests via LINE proxy; shifts, leave & payroll synced.', ja: '当番副店長 $1 がLINEで $2件を代理承認しました。シフト・休暇・給与に同期済。' }],
       [/^一鍵全核准 \((\d+)\)$/, { en: 'Approve All ($1)', ja: '一括承認 ($1)' }],
       [/^全部待簽 \((\d+)\)$/, { en: 'All ($1)', ja: '全未承認 ($1)' }],
       [/^請假調班 \((\d+)\)$/, { en: 'Leave/Swap ($1)', ja: '休暇・交代 ($1)' }],
