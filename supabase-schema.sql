@@ -13,6 +13,8 @@ create table if not exists public.shiftcraft_stores (
 );
 
 -- 啟用資料列安全策略並允許前端 App 讀寫同步
+grant usage on schema public to anon, authenticated;
+grant all on table public.shiftcraft_stores to anon, authenticated;
 alter table public.shiftcraft_stores enable row level security;
 
 drop policy if exists "shiftcraft_allow_all" on public.shiftcraft_stores;
