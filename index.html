@@ -94,6 +94,7 @@
       MID: { code: 'MID', name: '午尖峰支援 (PT短班)', shortLabel: '午尖峰 P', timeRange: '11:00-15:30', startHour: 11.0, endHour: 15.5, netHours: 4.5, isOff: false },
       EVENING: { code: 'EVENING', name: '晚班 (打烊結帳)', shortLabel: '晚班 E', timeRange: '14:00-22:30', startHour: 14.0, endHour: 22.5, netHours: 7.5, isOff: false },
       SPLIT: { code: 'SPLIT', name: '兩頭班 (午晚雙尖峰)', shortLabel: '兩頭班 S', timeRange: '10:30-14:30 / 17:30-21:30', startHour: 10.5, endHour: 21.5, netHours: 8.0, isOff: false },
+      OVERNIGHT: { code: 'OVERNIGHT', name: '大夜班 (跨夜營業 / 清潔)', shortLabel: '跨夜 N', timeRange: '22:00-06:00 (+1)', startHour: 22.0, endHour: 30.0, netHours: 7.5, isOff: false, isOvernight: true },
       OFF_REG: { code: 'OFF_REG', name: '例假日 (勞基法必休)', shortLabel: '例假', timeRange: '全天休假', startHour: 0, endHour: 0, netHours: 0, isOff: true },
       OFF_REST: { code: 'OFF_REST', name: '休息日 / PT劃休', shortLabel: '休假', timeRange: '排休 / 劃休', startHour: 0, endHour: 0, netHours: 0, isOff: true },
     };
@@ -727,7 +728,11 @@
             const prev = empShifts[i - 1];
             const pTpl = SHIFT_TEMPLATES[prev.shiftCode];
             if (!pTpl.isOff && !tpl.isOff) {
-              const restH = 24 - pTpl.endHour + tpl.startHour;
+              const pSegs = getShiftSegments(prev);
+              const cSegs = getShiftSegments(cur);
+              const pEnd = pSegs.length ? pSegs[pSegs.length - 1].end : pTpl.endHour;
+              const cStart = cSegs.length ? cSegs[0].start : tpl.startHour;
+              const restH = 24 - pEnd + cStart;
               if (restH < 11) {
                 hasErr = true;
                 issues.push({
@@ -779,8 +784,10 @@
     }
 
     function fmtHour(h) {
-      const hh = Math.floor(h);
-      const mm = Math.round((h - hh) * 60);
+      const norm = ((Number(h) || 0) % 24 + 24) % 24;
+      const hh = Math.floor(norm);
+      const mm = Math.round((norm - hh) * 60);
+      if (mm === 60) return `${String((hh + 1) % 24).padStart(2, '0')}:00`;
       return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
     }
 
@@ -796,12 +803,17 @@
       const tpl = SHIFT_TEMPLATES[shift.shiftCode];
       if (!tpl || tpl.isOff) return [];
       if (shift.customStart != null && shift.customEnd != null) {
-        return [{ start: shift.customStart, end: shift.customEnd, label: `${fmtHour(shift.customStart)}–${fmtHour(shift.customEnd)}` }];
+        const st = Number(shift.customStart);
+        let en = Number(shift.customEnd);
+        if (en <= st) en += 24;
+        const isOvernight = en > 24;
+        return [{ start: st, end: en, isOvernight, label: `${fmtHour(st)}–${fmtHour(en)}${isOvernight ? ' (+1)' : ''}` }];
       }
       if (shift.shiftCode === 'SPLIT') {
-        return [{ start: 10.5, end: 14.5, label: '10:30–14:30' }, { start: 17.5, end: 21.5, label: '17:30–21:30' }];
+        return [{ start: 10.5, end: 14.5, isOvernight: false, label: '10:30–14:30' }, { start: 17.5, end: 21.5, isOvernight: false, label: '17:30–21:30' }];
       }
-      return [{ start: tpl.startHour, end: tpl.endHour, label: `${fmtHour(tpl.startHour)}–${fmtHour(tpl.endHour)}` }];
+      const isOvernight = tpl.endHour > 24;
+      return [{ start: tpl.startHour, end: tpl.endHour, isOvernight, label: `${fmtHour(tpl.startHour)}–${fmtHour(tpl.endHour)}${isOvernight ? ' (+1)' : ''}` }];
     }
 
     function getShiftNetHours(shift) {
@@ -809,7 +821,10 @@
       const tpl = SHIFT_TEMPLATES[shift.shiftCode];
       if (!tpl || tpl.isOff) return 0;
       if (shift.customStart != null && shift.customEnd != null) {
-        const span = Math.max(0, shift.customEnd - shift.customStart);
+        const st = Number(shift.customStart);
+        let en = Number(shift.customEnd);
+        if (en <= st) en += 24;
+        const span = Math.max(0, en - st);
         return span >= 6 ? Number((span - 0.5).toFixed(1)) : Number(span.toFixed(1));
       }
       return tpl.netHours;
@@ -819,7 +834,6 @@
       const modal = App.sched.editingShiftModal;
       if (!modal) return;
       const emp = App.employees.find(e => e.id === modal.empId);
-      const isFlexEnabled = emp && emp.flexHoursType && emp.flexHoursType !== 'STANDARD';
       const code = document.getElementById('bar-edit-code').value;
       const station = document.getElementById('bar-edit-station').value;
       const startVal = document.getElementById('bar-edit-start').value;
@@ -829,16 +843,21 @@
       if (!s) { s = { employeeId: modal.empId, date: modal.date, shiftCode: code, station, aiReason: '手動排班' }; App.sched.shifts.push(s); }
       s.shiftCode = code;
       s.station = station;
-      if (isFlexEnabled && !SHIFT_TEMPLATES[code].isOff && code !== 'SPLIT' && startVal && endVal) {
+      if (!SHIFT_TEMPLATES[code].isOff && code !== 'SPLIT' && startVal && endVal) {
         const [sh, sm] = startVal.split(':').map(Number);
         const [eh, em] = endVal.split(':').map(Number);
-        const stH = sh + sm / 60, enH = eh + em / 60;
+        const stH = sh + sm / 60;
+        let enH = eh + em / 60;
+        if (enH <= stH) enH += 24; // 下班時間早於或等於上班時間 → 判定為跨夜班 (+1)
         const tpl = SHIFT_TEMPLATES[code];
-        if (enH > stH && (stH !== tpl.startHour || enH !== tpl.endHour)) { s.customStart = stH; s.customEnd = enH; }
+        if (stH !== tpl.startHour || enH !== tpl.endHour) { s.customStart = stH; s.customEnd = enH; }
         else { delete s.customStart; delete s.customEnd; }
       } else { delete s.customStart; delete s.customEnd; }
       App.sched.editingShiftModal = null;
-      App.toast = `已更新 ${emp.name} (${modal.date.slice(5)}) 排班時段。`;
+      const isNight = (s.customEnd != null && s.customEnd > 24) || (SHIFT_TEMPLATES[code] && SHIFT_TEMPLATES[code].endHour > 24);
+      App.toast = isNight
+        ? `已更新 ${emp.name} (${modal.date.slice(5)}) 跨夜班次，隔日時間軸將自動銜接凌晨時段。`
+        : `已更新 ${emp.name} (${modal.date.slice(5)}) 排班時段。`;
       render();
     }
 
@@ -1847,24 +1866,53 @@
       });
       const curDayStat = dayStats[selDate];
 
-      const AXIS_START = 8, AXIS_END = 23, AXIS_SPAN = 15;
-      const AXIS_TICKS = [8, 10, 12, 14, 16, 18, 20, 22];
-      // 餐期尖峰標記 (11:30-14:00, 17:30-20:30)
+      const AXIS_START = 0, AXIS_END = 24, AXIS_SPAN = 24;
+      const AXIS_TICKS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
+      // 深夜跨夜時段 (00:00-06:00, 22:00-24:00) 與餐期尖峰標記 (11:30-14:00, 17:30-20:30)
+      const nightZones = [
+        { left: 0, width: (6 / AXIS_SPAN) * 100, label: '跨夜 / 凌晨' },
+        { left: (22 / AXIS_SPAN) * 100, width: (2 / AXIS_SPAN) * 100, label: '跨夜' },
+      ];
       const peakZones = [
         { left: ((11.5 - AXIS_START) / AXIS_SPAN) * 100, width: (2.5 / AXIS_SPAN) * 100, label: '午尖峰' },
         { left: ((17.5 - AXIS_START) / AXIS_SPAN) * 100, width: (3.0 / AXIS_SPAN) * 100, label: '晚尖峰' },
       ];
 
+      const selIdx = FORECASTS.findIndex(f => f.date === selDate);
+      const prevDate = selIdx > 0 ? FORECASTS[selIdx - 1].date : null;
+      const prevClosed = prevDate ? Boolean((App.sched.dayConfig[prevDate] || {}).isClosed) : false;
+
       const dayRows = App.employees.map(emp => {
         const shift = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === selDate);
         const segments = dayCfg.isClosed ? [] : getShiftSegments(shift);
+        const carrySegments = [];
+        if (prevDate && !prevClosed && !dayCfg.isClosed) {
+          const prevShift = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === prevDate);
+          const prevSegs = getShiftSegments(prevShift);
+          prevSegs.forEach(ps => {
+            if (ps.end > 24) {
+              const tailEnd = Math.min(24, ps.end - 24);
+              carrySegments.push({ start: 0, end: tailEnd, isCarryOver: true, prevDate, station: prevShift ? prevShift.station : null, label: `前日跨夜 00:00–${fmtHour(tailEnd)}` });
+            }
+          });
+        }
         const hours = dayCfg.isClosed ? 0 : getShiftNetHours(shift);
-        return { emp, shift, segments, hours, isWorking: segments.length > 0 };
+        const allVisualSegs = [
+          ...carrySegments,
+          ...segments.map(seg => ({ ...seg, visStart: Math.max(0, seg.start), visEnd: Math.min(24, seg.end) })),
+        ];
+        return { emp, shift, segments, carrySegments, allVisualSegs, hours, isWorking: segments.length > 0 || carrySegments.length > 0 };
       }).filter(row => App.sched.showOffStaff ? true : row.isWorking);
 
       const slotHeadcounts = AXIS_TICKS.map(tick => {
         const mid = tick + 1;
-        return { tick, count: dayRows.filter(r => r.segments.some(seg => seg.start <= mid && seg.end > mid)).length };
+        return {
+          tick,
+          count: dayRows.filter(r =>
+            r.segments.some(seg => seg.start <= mid && Math.min(24, seg.end) > mid) ||
+            r.carrySegments.some(cs => cs.start <= mid && cs.end > mid)
+          ).length
+        };
       });
 
       return `
@@ -1974,14 +2022,16 @@
                 </div>
               </div>
 
-              <!-- 甘特圖 -->
+              <!-- 甘特圖 (24 小時全時段 + 跨夜銜接) -->
               <div class="overflow-x-auto">
-                <div class="min-w-[800px]">
+                <div class="min-w-[980px]">
                   <div class="grid border-b border-[var(--border)] bg-slate-50/80 text-[11px] text-slate-500 font-semibold" style="grid-template-columns: 180px 1fr;">
                     <div class="px-4 flex items-center border-r border-[var(--border)]">員工 / 累計工時</div>
                     <div class="relative h-12">
+                      ${nightZones.map(z => `<div class="absolute top-0 bottom-0 bg-indigo-500/[0.06] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-indigo-100/90 text-indigo-800 font-semibold">${z.label}</span></div>`).join('')}
                       ${peakZones.map(z => `<div class="absolute top-0 bottom-0 bg-amber-500/[0.08] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-amber-100/90 text-amber-800 font-semibold">${z.label}</span></div>`).join('')}
-                      ${AXIS_TICKS.map(t => `<span class="absolute bottom-1.5 mono-num pl-1.5 leading-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t).padStart(2,'0')}:00</span>`).join('')}
+                      ${AXIS_TICKS.map(t => `<span class="absolute bottom-1.5 mono-num pl-1 leading-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t).padStart(2,'0')}:00</span>`).join('')}
+                      <span class="absolute bottom-1.5 right-1 mono-num leading-none text-slate-400">24:00</span>
                     </div>
                   </div>
 
@@ -1990,7 +2040,7 @@
                       <div class="font-bold text-slate-800">本日（${selForecast.shortDate} ${selForecast.dayLabel}）設定為店休</div>
                       <button onclick="toggleDayClosed('${selDate}')" class="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold cursor-pointer">恢復當日營業</button>
                     </div>
-                  ` : dayRows.filter(row => App.sched.stationFilter === 'ALL' ? true : (row.shift && row.shift.station === App.sched.stationFilter)).map(row => {
+                  ` : dayRows.filter(row => App.sched.stationFilter === 'ALL' ? true : (row.shift && row.shift.station === App.sched.stationFilter) || row.carrySegments.some(cs => cs.station === App.sched.stationFilter)).map(row => {
                     const stCode = row.shift ? row.shift.station : null;
                     const stObj = (stCode && (App.storeSettings.workstations.find(w => w.code === stCode) || STATIONS[stCode])) || null;
                     const barBg = stObj ? stObj.badgeBg : '#F1F5F9';
@@ -2009,21 +2059,35 @@
                         </div>
 
                         <div onclick="App.sched.editingShiftModal={empId:'${row.emp.id}',date:'${selDate}'};render()" class="relative min-h-[60px] cursor-pointer">
+                          ${nightZones.map(z => `<div class="absolute top-0 bottom-0 bg-indigo-500/[0.03] pointer-events-none" style="left:${z.left}%;width:${z.width}%"></div>`).join('')}
                           ${peakZones.map(z => `<div class="absolute top-0 bottom-0 bg-amber-500/[0.04] pointer-events-none" style="left:${z.left}%;width:${z.width}%"></div>`).join('')}
                           ${AXIS_TICKS.map(t => `<div class="absolute top-0 bottom-0 border-l border-slate-100 pointer-events-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%"></div>`).join('')}
 
-                          ${row.isWorking ? row.segments.map(seg => {
-                            const leftPct = Math.max(0, ((seg.start - AXIS_START) / AXIS_SPAN) * 100);
-                            const widthPct = Math.min(100 - leftPct, ((seg.end - seg.start) / AXIS_SPAN) * 100);
+                          ${row.carrySegments.map(cs => {
+                            const leftPct = 0;
+                            const widthPct = Math.min(100, ((cs.end - cs.start) / AXIS_SPAN) * 100);
                             return `
-                              <div class="shift-bar absolute top-1/2 -translate-y-1/2 h-9 rounded-md flex items-center justify-between gap-2 px-2.5 ${hasErr ? 'ring-2 ring-rose-500' : ''}"
-                                style="left:${leftPct}%;width:${widthPct}%;background:${barBg};border-left:3px solid ${barText};color:${barText};">
-                                <span class="mono-num text-xs font-bold whitespace-nowrap">${seg.label}</span>
-                                <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-white/75 hidden sm:inline whitespace-nowrap">${stObj ? stObj.shortName : ''}</span>
+                              <div title="${cs.label}" class="shift-bar absolute top-1/2 -translate-y-1/2 h-9 rounded-r-md flex items-center justify-between gap-1.5 px-2 bg-indigo-50 text-indigo-800 border border-dashed border-indigo-400"
+                                style="left:${leftPct}%;width:${widthPct}%;">
+                                <span class="mono-num text-[11px] font-bold truncate">${cs.label}</span>
+                              </div>
+                            `;
+                          }).join('')}
+
+                          ${row.segments.length > 0 ? row.segments.map(seg => {
+                            const visStart = Math.max(AXIS_START, seg.start);
+                            const visEnd = Math.min(AXIS_END, seg.end);
+                            const leftPct = ((visStart - AXIS_START) / AXIS_SPAN) * 100;
+                            const widthPct = Math.max(4, ((visEnd - visStart) / AXIS_SPAN) * 100);
+                            return `
+                              <div title="${seg.label}" class="shift-bar absolute top-1/2 -translate-y-1/2 h-9 ${seg.isOvernight ? 'rounded-l-md border-r-2 border-dashed border-indigo-500' : 'rounded-md'} flex items-center justify-between gap-1.5 px-2 overflow-hidden ${hasErr ? 'ring-2 ring-rose-500' : ''}"
+                                style="left:${leftPct}%;width:${widthPct}%;background:${seg.isOvernight ? '#E0E7FF' : barBg};border-left:3px solid ${seg.isOvernight ? '#4338CA' : barText};color:${seg.isOvernight ? '#312E81' : barText};">
+                                <span class="mono-num text-[11px] font-bold whitespace-nowrap truncate">${seg.label}</span>
+                                <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-white/75 hidden sm:inline whitespace-nowrap shrink-0">${seg.isOvernight ? '跨夜 +1' : (stObj ? stObj.shortName : '')}</span>
                                 ${hasErr ? '<span class="w-2 h-2 rounded-full bg-rose-600 shrink-0" title="勞基法衝突"></span>' : ''}
                               </div>
                             `;
-                          }).join('') : `<div class="absolute inset-0 flex items-center justify-center text-[11px] text-slate-400">休假中（點擊排班）</div>`}
+                          }).join('') : (row.carrySegments.length === 0 ? `<div class="absolute inset-0 flex items-center justify-center text-[11px] text-slate-400">休假中（點擊排班）</div>` : '')}
                         </div>
                       </div>
                     `;
@@ -2116,9 +2180,12 @@
                         ${Object.keys(SHIFT_TEMPLATES).map(code => `<option value="${code}" ${s.shiftCode===code?'selected':''}>${SHIFT_TEMPLATES[code].name} (${SHIFT_TEMPLATES[code].timeRange})</option>`).join('')}
                       </select>
                     </div>
-                    <div class="grid grid-cols-2 gap-2.5 ${!isFlexEnabled ? 'opacity-50' : ''}">
-                      <div><label class="block font-semibold text-slate-700 mb-1">${isFlexEnabled ? '自訂上班 (彈性)' : '上班時間'}</label><input id="bar-edit-start" type="time" ${!isFlexEnabled ? 'disabled' : ''} value="${curStart}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                      <div><label class="block font-semibold text-slate-700 mb-1">${isFlexEnabled ? '自訂下班 (彈性)' : '下班時間'}</label><input id="bar-edit-end" type="time" ${!isFlexEnabled ? 'disabled' : ''} value="${curEnd}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                    <div class="grid grid-cols-2 gap-2.5">
+                      <div><label class="block font-semibold text-slate-700 mb-1">上班時間</label><input id="bar-edit-start" type="time" value="${curStart}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                      <div><label class="block font-semibold text-slate-700 mb-1">下班時間（可跨夜）</label><input id="bar-edit-end" type="time" value="${curEnd}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                    </div>
+                    <div class="text-[11px] text-indigo-700 bg-indigo-50/70 border border-indigo-200/80 rounded-lg px-2.5 py-1.5">
+                      支援跨夜排班：若下班時間早於上班時間（例如 22:00 → 06:00），系統將自動判定為跨夜班 (+1) 並銜接至隔日凌晨時間軸。
                     </div>
                     <div>
                       <label class="block font-semibold text-slate-700 mb-1">指派工作站點</label>
@@ -4882,9 +4949,21 @@
       '或使用第三方快速登入': { en: 'Or continue with', ja: 'または外部アカウントでログイン' },
       '使用 LINE 企業帳號一鍵登入': { en: 'Sign in with LINE Business', ja: 'LINE法人アカウントでログイン' },
       '一鍵進入': { en: 'Quick Demo', ja: 'ワンクリック体験' },
+      '跨夜 / 凌晨': { en: 'Overnight / Early AM', ja: '深夜・早朝' },
+      '跨夜': { en: 'Overnight', ja: '深夜' },
+      '跨夜 +1': { en: 'Overnight +1', ja: '跨夜 +1' },
+      '跨夜 N': { en: 'Night N', ja: '深夜 N' },
+      '大夜班 (跨夜營業 / 清潔)': { en: 'Overnight Shift (Late Ops / Cleaning)', ja: '深夜シフト (夜間営業・清掃)' },
+      '下班時間（可跨夜）': { en: 'End Time (Overnight OK)', ja: '退勤時刻（跨夜可）' },
+      '支援跨夜排班：若下班時間早於上班時間（例如 22:00 → 06:00），系統將自動判定為跨夜班 (+1) 並銜接至隔日凌晨時間軸。': {
+        en: 'Overnight shifts supported: if End Time is earlier than Start Time (e.g. 22:00 → 06:00), it auto-schedules as an overnight shift (+1) and carries over to next day 00:00–06:00.',
+        ja: '跨夜シフト対応：退勤時刻が出勤時刻より早い場合（例：22:00 → 06:00）、自動で跨夜シフト(+1)となり翌日の深夜タイムラインに接続されます。',
+      },
     };
 
     const I18N_PATTERNS = [
+      [/^前日跨夜 (.+)$/, { en: 'Prev Overnight $1', ja: '前日跨夜 $1' }],
+      [/^已更新 (.+?) \((.+?)\) 跨夜班次，隔日時間軸將自動銜接凌晨時段。$/, { en: 'Updated overnight shift for $1 ($2); carry-over synced to next day timeline.', ja: '$1 ($2) の跨夜シフトを更新しました。翌日の深夜時間帯に自動接続されます。' }],
       [/^帳單與發票 \((\d+)\)$/, { en: 'Invoices ($1)', ja: '請求書・履歴 ($1)' }],
       [/^目前已登入裝置 \((\d+)\)$/, { en: 'Active Sessions ($1)', ja: 'ログイン中の端末 ($1)' }],
       [/^(\w+) · (\d+) 店訂閱中$/, { en: '$1 · $2 stores active', ja: '$1・$2店舗契約中' }],
