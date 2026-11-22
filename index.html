@@ -1523,6 +1523,53 @@
       const role = App.storeSettings.activeRole || 'OWNER';
       return !!(App.storeSettings.permissions[role] && App.storeSettings.permissions[role][permKey]);
     }
+    function switchActiveRole(roleCode, roleLabel) {
+      App.storeSettings.activeRole = roleCode;
+      if (!hasRolePerm('approveLeave') && !hasRolePerm('approvePunch')) {
+        App.liffRole = 'STAFF';
+      }
+      const tabPermMap = {
+        SCHED: 'schedEdit', HR: 'hrDocs', PAYROLL: 'payrollManage',
+        LIFF_LEAVE: 'approveLeave', ATTENDANCE: 'approvePunch',
+        SETTINGS: 'settingsAdmin', BILLING: 'settingsAdmin',
+      };
+      if (!hasRolePerm(tabPermMap[App.mainTab])) {
+        const firstAllowed = Object.keys(tabPermMap).find(k => hasRolePerm(tabPermMap[k]));
+        if (firstAllowed) App.mainTab = firstAllowed;
+      }
+      App.toast = `已切換檢視身分：${roleLabel || roleCode}`;
+      render();
+    }
+    function renderNoPermissionGate(currentNav, activeRoleMeta, allowedNavs) {
+      const isStaff = App.storeSettings.activeRole === 'STAFF';
+      return `
+        <div class="max-w-lg mx-auto mt-10 bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-4 shadow-xs text-xs">
+          <div class="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+            ${ICONS.shield}
+          </div>
+          <div class="space-y-1.5">
+            <h2 class="text-base font-bold text-slate-900">權限不足，無法檢視此模組資料</h2>
+            <p class="text-slate-600 leading-relaxed">
+              目前身分「<strong>${activeRoleMeta.name}</strong>」未開放「<strong>${currentNav.label}</strong>」存取權限。為保護門市薪資、人事個資與營運機密，系統已隱藏所有高權限資料。
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center justify-center gap-2 pt-2">
+            ${isStaff ? `
+              <button onclick="App.liffRole='STAFF';App.liffDrawerOpen=true;render()" class="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">
+                ${ICONS.smartphone} 開啟員工個人 LINE LIFF
+              </button>
+            ` : (allowedNavs.length > 0 ? `
+              <button onclick="App.mainTab='${allowedNavs[0].key}';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">
+                前往可存取模組（${allowedNavs[0].label}）
+              </button>
+            ` : '')}
+            <button onclick="switchActiveRole('OWNER','老闆 / 品牌負責人')" class="h-9 px-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold cursor-pointer">
+              切回老闆身分
+            </button>
+          </div>
+        </div>
+      `;
+    }
     function toggleWeeklyClosedDay(dayIdx) {
       const st = App.storeSettings, exists = st.weeklyClosedDays.includes(dayIdx);
       st.weeklyClosedDays = exists ? st.weeklyClosedDays.filter(d => d !== dayIdx) : [...st.weeklyClosedDays, dayIdx].sort((a,b)=>a-b);
@@ -1724,6 +1771,8 @@
         { key: 'BILLING', label: '帳號與訂閱', icon: ICONS.creditCard, perm: 'settingsAdmin' },
       ];
       const currentNav = NAV_ITEMS.find(n => n.key === App.mainTab) || NAV_ITEMS[0];
+      const canViewCurrent = hasRolePerm(currentNav.perm);
+      const allowedNavs = NAV_ITEMS.filter(n => hasRolePerm(n.perm));
 
       document.getElementById('app').innerHTML = `
         <div class="min-h-screen flex flex-col lg:flex-row">
@@ -1746,7 +1795,7 @@
                   <span class="truncate">${st.name}</span>
                 </div>
                 <div class="text-[11px] text-slate-500 mono-num flex items-center justify-between">
-                  <span>編制 ${App.employees.length} 人 (外籍 ${foreignCnt})</span>
+                  <span>${hasRolePerm('hrDocs') || hasRolePerm('schedEdit') ? `編制 ${App.employees.length} 人 (外籍 ${foreignCnt})` : activeRoleMeta.name}</span>
                   <span class="text-emerald-600 font-medium">營業中</span>
                 </div>
               </div>
@@ -1761,8 +1810,8 @@
                       onclick="App.mainTab='${item.key}';render()"
                       class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
                         active
-                          ? 'bg-[#0F766E] text-white shadow-xs'
-                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                          ? (locked ? 'bg-slate-700 text-white shadow-xs' : 'bg-[#0F766E] text-white shadow-xs')
+                          : (locked ? 'text-slate-400 hover:bg-slate-50' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
                       }"
                     >
                       <span class="flex items-center gap-2.5">
@@ -1770,7 +1819,7 @@
                         <span>${item.label}</span>
                       </span>
                       <span class="flex items-center gap-1">
-                        ${item.badge > 0 ? `<span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold mono-num ${active ? 'bg-white text-[#0F766E]' : 'bg-rose-500 text-white'}">${item.badge}</span>` : ''}
+                        ${!locked && item.badge > 0 ? `<span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold mono-num ${active ? 'bg-white text-[#0F766E]' : 'bg-rose-500 text-white'}">${item.badge}</span>` : ''}
                         ${locked ? `<span class="${active ? 'text-white/80' : 'text-slate-400'}">${ICONS.lock}</span>` : ''}
                       </span>
                     </button>
@@ -1783,16 +1832,23 @@
             <div class="hidden lg:block p-4 border-t border-[var(--border)] space-y-2.5 bg-slate-50/50">
               <div class="text-[11px] font-medium text-slate-500">檢視身分模擬 (RBAC)</div>
               <select
-                onchange="App.storeSettings.activeRole=this.value;App.toast='已切換檢視身分：'+this.options[this.selectedIndex].text;render()"
+                onchange="switchActiveRole(this.value, this.options[this.selectedIndex].text)"
                 class="w-full h-8 px-2.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800 cursor-pointer focus:outline-none focus:border-[#0F766E]"
               >
                 ${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${st.activeRole===r.code?'selected':''}>${r.name}</option>`).join('')}
               </select>
               <div class="pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 text-[11px]">
-                <button onclick="App.mainTab='BILLING';render()" class="min-w-0 text-left cursor-pointer group">
-                  <div class="font-bold text-slate-800 group-hover:text-[#0F766E] truncate">${App.auth.email}</div>
-                  <div class="text-[10px] text-[#0F766E] font-semibold mono-num">${App.billing.planCode} · ${App.billing.storeCount} 店訂閱中</div>
-                </button>
+                ${hasRolePerm('settingsAdmin') ? `
+                  <button onclick="App.mainTab='BILLING';render()" class="min-w-0 text-left cursor-pointer group">
+                    <div class="font-bold text-slate-800 group-hover:text-[#0F766E] truncate">${App.auth.email}</div>
+                    <div class="text-[10px] text-[#0F766E] font-semibold mono-num">${App.billing.planCode} · ${App.billing.storeCount} 店訂閱中</div>
+                  </button>
+                ` : `
+                  <div class="min-w-0">
+                    <div class="font-bold text-slate-700 truncate">${activeRoleMeta.short}</div>
+                    <div class="text-[10px] text-slate-400">受限權限模式</div>
+                  </div>
+                `}
                 <button onclick="logoutToAuthScreen()" class="shrink-0 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 text-slate-600 font-semibold cursor-pointer">登出</button>
               </div>
             </div>
@@ -1807,7 +1863,7 @@
                 ${st.activeRole !== 'OWNER' ? `
                   <span class="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-medium">
                     預覽身分：${activeRoleMeta.short}
-                    <button onclick="App.storeSettings.activeRole='OWNER';render()" class="underline font-bold cursor-pointer">切回老闆</button>
+                    <button onclick="switchActiveRole('OWNER','老闆 / 品牌負責人')" class="underline font-bold cursor-pointer">切回老闆</button>
                   </span>
                 ` : ''}
               </div>
@@ -1834,13 +1890,15 @@
 
             <!-- 內容主畫布 -->
             <main class="flex-1 p-4 sm:p-6 max-w-[1440px] w-full mx-auto">
-              ${App.mainTab === 'SCHED' ? renderSchedulingModule() : ''}
-              ${App.mainTab === 'HR' ? renderHrModule() : ''}
-              ${App.mainTab === 'PAYROLL' ? renderPayrollModule() : ''}
-              ${App.mainTab === 'LIFF_LEAVE' ? renderLiffLeaveModule() : ''}
-              ${App.mainTab === 'ATTENDANCE' ? renderAttendanceModule() : ''}
-              ${App.mainTab === 'SETTINGS' ? renderStoreSettingsModule() : ''}
-              ${App.mainTab === 'BILLING' ? renderBillingModule() : ''}
+              ${!canViewCurrent ? renderNoPermissionGate(currentNav, activeRoleMeta, allowedNavs) : `
+                ${App.mainTab === 'SCHED' ? renderSchedulingModule() : ''}
+                ${App.mainTab === 'HR' ? renderHrModule() : ''}
+                ${App.mainTab === 'PAYROLL' ? renderPayrollModule() : ''}
+                ${App.mainTab === 'LIFF_LEAVE' ? renderLiffLeaveModule() : ''}
+                ${App.mainTab === 'ATTENDANCE' ? renderAttendanceModule() : ''}
+                ${App.mainTab === 'SETTINGS' ? renderStoreSettingsModule() : ''}
+                ${App.mainTab === 'BILLING' ? renderBillingModule() : ''}
+              `}
             </main>
           </div>
         </div>
@@ -1953,9 +2011,11 @@
               <div class="px-3 py-1.5 rounded-lg bg-white border border-[var(--border)] font-medium text-slate-600">
                 全週工時 <strong class="text-slate-900 mono-num ml-1">${ev.totalHours.toFixed(1)}h</strong>
               </div>
-              <div class="px-3 py-1.5 rounded-lg bg-white border border-[var(--border)] font-medium text-slate-600">
-                預估週營收 <strong class="text-slate-900 mono-num ml-1">$${(ev.totalRev/1000).toFixed(1)}k</strong>
-              </div>
+              ${hasRolePerm('payrollManage') || hasRolePerm('settingsAdmin') ? `
+                <div class="px-3 py-1.5 rounded-lg bg-white border border-[var(--border)] font-medium text-slate-600">
+                  預估週營收 <strong class="text-slate-900 mono-num ml-1">$${(ev.totalRev/1000).toFixed(1)}k</strong>
+                </div>
+              ` : ''}
               ${(errCnt + warnCnt) > 0 ? `
                 <button onclick="App.sched.showIssuesPanel=!App.sched.showIssuesPanel;render()" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer border ${errCnt > 0 ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-amber-50 border-amber-200 text-amber-800'}">
                   ${ICONS.alert}
@@ -2908,7 +2968,7 @@
                   <option value="ANOMALY" ${a.filterStatus==='ANOMALY'?'selected':''}>僅看異常</option>
                   <option value="NORMAL" ${a.filterStatus==='NORMAL'?'selected':''}>正常出勤</option>
                 </select>
-                <button onclick="exportAttendanceCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出 CSV</button>
+                ${hasRolePerm('exportCsv') ? `<button onclick="exportAttendanceCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出 CSV</button>` : ''}
               </div>
             </div>
             <div class="overflow-x-auto">
@@ -3873,7 +3933,9 @@
       const empAtt = (App.payroll.attByMonth[mk] && App.payroll.attByMonth[mk][emp.id]) || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 };
       const slip = mode === 'PAYROLL' ? calcPayslip(emp, empAtt, mk) : null;
       const slipSignedAt = App.payroll.signed[mk + '_' + emp.id];
-      const isMgr = App.liffRole === 'MANAGER';
+      const canLineApprove = hasRolePerm('approveLeave') || hasRolePerm('approvePunch');
+      const isMgr = canLineApprove && App.liffRole === 'MANAGER';
+      const isStaffOnly = App.storeSettings.activeRole === 'STAFF';
       const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
 
       return `
@@ -3884,21 +3946,23 @@
                 <span class="font-bold">${isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器'}</span>
                 <button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
               </div>
-              <div class="grid grid-cols-2 gap-1 bg-black/15 p-1 rounded-lg text-[11px] font-bold">
-                <button onclick="App.liffRole='STAFF';render()" class="py-1 rounded-md transition cursor-pointer ${!isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">員工端</button>
-                <button onclick="App.liffRole='MANAGER';render()" class="py-1 rounded-md transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">
-                  <span>店長簽核</span>
-                  ${totalLinePending > 0 ? `<span class="px-1.5 py-0.2 rounded-full text-[10px] mono-num ${isMgr ? 'bg-rose-500 text-white' : 'bg-white text-[#059643]'}">${totalLinePending}</span>` : ''}
-                </button>
-              </div>
-              ${!isMgr ? `
+              ${canLineApprove ? `
+                <div class="grid grid-cols-2 gap-1 bg-black/15 p-1 rounded-lg text-[11px] font-bold">
+                  <button onclick="App.liffRole='STAFF';render()" class="py-1 rounded-md transition cursor-pointer ${!isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">員工端</button>
+                  <button onclick="App.liffRole='MANAGER';render()" class="py-1 rounded-md transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">
+                    <span>店長簽核</span>
+                    ${totalLinePending > 0 ? `<span class="px-1.5 py-0.2 rounded-full text-[10px] mono-num ${isMgr ? 'bg-rose-500 text-white' : 'bg-white text-[#059643]'}">${totalLinePending}</span>` : ''}
+                  </button>
+                </div>
+              ` : ''}
+              ${!isMgr && !isStaffOnly ? `
                 <select
                   onchange="const v=this.value;if('${mode}'==='ATT')App.attendance.liffEmpId=v;else if('${mode}'==='LEAVE')App.liff.empId=v;else if('${mode}'==='PAYROLL'){App.payroll.liffEmpId=v;App.payroll.selectedEmpId=v;}else App.sched.liffEmpId=v;render()"
                   class="w-full h-8 px-2.5 rounded-lg bg-black/20 border border-white/30 text-white text-xs font-bold cursor-pointer"
                 >
                   ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
                 </select>
-              ` : ''}
+              ` : (!isMgr ? `<div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold">登入員工：${emp.name} (${emp.code})</div>` : '')}
             </div>
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
@@ -5073,9 +5137,19 @@
       '宵夜跨夜 (14:00–02:00)': { en: 'Late Night (14:00–02:00)', ja: '深夜営業 (14:00–02:00)' },
       '24 小時全天候 (00:00–24:00)': { en: '24-Hour (00:00–24:00)', ja: '24時間営業 (00:00–24:00)' },
       '前往店鋪基本資料調整可排班時間': { en: 'Configure schedulable hours in Store Settings', ja: '店舗基本設定でシフト可能時間を変更' },
+      '權限不足，無法檢視此模組資料': { en: 'Access Denied — Insufficient Permissions', ja: '権限不足のためこのデータを閲覧できません' },
+      '開啟員工個人 LINE LIFF': { en: 'Open Staff LINE LIFF', ja: '従業員用 LINE LIFF を開く' },
+      '切回老闆身分': { en: 'Switch Back to Owner', ja: 'オーナー権限に戻す' },
+      '受限權限模式': { en: 'Restricted View', ja: '閲覧制限モード' },
     };
 
     const I18N_PATTERNS = [
+      [/^前往可存取模組（(.+?)）$/, { en: 'Go to Accessible Module ($1)', ja: '閲覧可能なモジュールへ（$1）' }],
+      [/^登入員工：(.+)$/, { en: 'Signed-in Staff: $1', ja: 'ログイン従業員：$1' }],
+      [/^目前身分「(.+?)」未開放「(.+?)」存取權限。為保護門市薪資、人事個資與營運機密，系統已隱藏所有高權限資料。$/, {
+        en: 'Role "$1" does not have access to "$2". Sensitive payroll, HR, and operational data are hidden.',
+        ja: '現在のロール「$1」には「$2」の閲覧権限がありません。給与・人事・機密保護のためデータは非表示です。',
+      }],
       [/^可排班時段 (.+)$/, { en: 'Window: $1', ja: '表示範囲 $1' }],
       [/^目前顯示：(.+)$/, { en: 'Current: $1', ja: '現在の表示：$1' }],
       [/^已更新店鋪可排班時間為 (.+?)，排班時間軸已即時同步。$/, { en: 'Updated store schedulable hours to $1; timeline synced.', ja: '店舗シフト可能時間を $1 に更新しタイムラインへ同期しました。' }],
