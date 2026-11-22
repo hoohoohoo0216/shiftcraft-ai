@@ -610,6 +610,10 @@
         App.lineLiff.loggedIn = liff.isLoggedIn();
         const urlParams = new URLSearchParams(window.location.search);
         const forceLiffView = urlParams.get('liff') === '1';
+        const targetTab = urlParams.get('tab');
+        if (targetTab && ['SCHED', 'ATTENDANCE', 'LIFF_LEAVE', 'PAYROLL'].includes(targetTab)) {
+          App.mainTab = targetTab;
+        }
 
         if (App.lineLiff.inClient || forceLiffView) {
           if (!liff.isLoggedIn()) {
