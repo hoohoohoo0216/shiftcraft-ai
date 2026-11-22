@@ -6,6 +6,7 @@
   <title>班匠 ShiftCraft AI｜台灣餐飲營運與智慧排班平台</title>
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root {
       --bg: #F8FAFC;
@@ -332,6 +333,30 @@
       liffRole: 'STAFF', // STAFF | MANAGER
       liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
       lineLiff: { liffId: '2012747321-uH6zNzCm', ready: false, inClient: false, loggedIn: false, profile: null, error: null },
+      multiStore: {
+        brandId: 'brand-shiftcraft-demo',
+        activeStoreId: 'store-01',
+        stores: [
+          { id: 'store-01', name: '班匠餐飲・信義概念店', city: '台北市信義區' },
+          { id: 'store-02', name: '班匠餐飲・大安旗艦店', city: '台北市大安區' },
+          { id: 'store-03', name: '班匠餐飲・台中公益店', city: '台中市西區' },
+        ],
+        storeData: {},
+        addingBranch: false,
+        newBranchName: '',
+        newBranchCity: '',
+      },
+      cloud: {
+        url: '',
+        anonKey: '',
+        status: 'LOCAL', // LOCAL | CONNECTING | SYNCED | SYNCING | ERROR
+        lastSyncedAt: null,
+        error: null,
+        modalOpen: false,
+        draftUrl: '',
+        draftKey: '',
+        draftBrandId: 'brand-shiftcraft-demo',
+      },
       employees: JSON.parse(JSON.stringify(INITIAL_UNIFIED_EMPLOYEES)),
 
       sched: {
@@ -638,6 +663,361 @@
       } catch (err) {
         App.lineLiff.error = err && err.message ? err.message : String(err);
       }
+    }
+
+    // ============================================================================
+    // 3.5 多店管理與 Supabase 雲端即時同步引擎 (Multi-Store + Cloud Sync)
+    // ============================================================================
+    const CLOUD_CFG_KEY = 'shiftcraft_cloud_cfg_v1';
+    const DEFAULT_CLOUD_CONFIG = {
+      url: '',
+      anonKey: '',
+      brandId: 'brand-shiftcraft-demo',
+    };
+    const CLOUD_CLIENT_ID = 'cli-' + Math.random().toString(36).slice(2, 10);
+    let _sbClient = null;
+    let _sbChannel = null;
+    let _cloudPushTimer = null;
+    let _suppressCloudPush = false;
+
+    const SUPABASE_SCHEMA_SQL = `create table if not exists public.shiftcraft_stores (
+  brand_id text not null,
+  store_id text not null,
+  store_name text not null,
+  city text default '',
+  payload jsonb not null default '{}'::jsonb,
+  updated_by text default '',
+  updated_at timestamptz not null default now(),
+  primary key (brand_id, store_id)
+);
+alter table public.shiftcraft_stores enable row level security;
+drop policy if exists "shiftcraft_allow_all" on public.shiftcraft_stores;
+create policy "shiftcraft_allow_all" on public.shiftcraft_stores for all using (true) with check (true);
+do $$ begin
+  if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='shiftcraft_stores') then
+    alter publication supabase_realtime add table public.shiftcraft_stores;
+  end if;
+end $$;`;
+
+    function captureActiveStoreSnapshot() {
+      return {
+        employees: JSON.parse(JSON.stringify(App.employees)),
+        sched: {
+          shifts: JSON.parse(JSON.stringify(App.sched.shifts)),
+          dayConfig: JSON.parse(JSON.stringify(App.sched.dayConfig)),
+        },
+        payroll: { rules: JSON.parse(JSON.stringify(App.payroll.rules)) },
+        liff: {
+          requests: JSON.parse(JSON.stringify(App.liff.requests)),
+          balances: JSON.parse(JSON.stringify(App.liff.balances)),
+        },
+        attendance: {
+          logs: JSON.parse(JSON.stringify(App.attendance.logs)),
+          corrections: JSON.parse(JSON.stringify(App.attendance.corrections)),
+        },
+        storeSettings: JSON.parse(JSON.stringify(App.storeSettings)),
+      };
+    }
+
+    function createBlankStoreSnapshot(storeMeta) {
+      const base = captureActiveStoreSnapshot();
+      base.storeSettings.name = storeMeta.name;
+      if (storeMeta.city) base.storeSettings.address = storeMeta.city;
+      base.liff.requests = [];
+      base.attendance.corrections = [];
+      return base;
+    }
+
+    function applyStoreSnapshot(snap, storeMeta) {
+      if (!snap) return;
+      if (Array.isArray(snap.employees) && snap.employees.length) App.employees = snap.employees;
+      if (snap.sched) {
+        if (Array.isArray(snap.sched.shifts)) App.sched.shifts = snap.sched.shifts;
+        if (snap.sched.dayConfig) App.sched.dayConfig = snap.sched.dayConfig;
+      }
+      if (snap.payroll && snap.payroll.rules) App.payroll.rules = Object.assign({}, App.payroll.rules, snap.payroll.rules);
+      if (snap.liff) {
+        if (Array.isArray(snap.liff.requests)) App.liff.requests = snap.liff.requests;
+        if (snap.liff.balances) App.liff.balances = snap.liff.balances;
+      }
+      if (snap.attendance) {
+        if (Array.isArray(snap.attendance.logs)) App.attendance.logs = snap.attendance.logs;
+        if (Array.isArray(snap.attendance.corrections)) App.attendance.corrections = snap.attendance.corrections;
+      }
+      if (snap.storeSettings) {
+        App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
+      }
+      if (storeMeta && storeMeta.name) App.storeSettings.name = storeMeta.name;
+    }
+
+    function switchActiveStore(nextStoreId) {
+      const ms = App.multiStore;
+      if (!nextStoreId || nextStoreId === ms.activeStoreId) return;
+      // 先保存當前分店快照
+      ms.storeData[ms.activeStoreId] = captureActiveStoreSnapshot();
+      const targetMeta = ms.stores.find(s => s.id === nextStoreId);
+      if (!targetMeta) return;
+      ms.activeStoreId = nextStoreId;
+      if (!ms.storeData[nextStoreId]) {
+        ms.storeData[nextStoreId] = createBlankStoreSnapshot(targetMeta);
+      }
+      _suppressCloudPush = true;
+      applyStoreSnapshot(ms.storeData[nextStoreId], targetMeta);
+      _suppressCloudPush = false;
+      App.toast = `已切換至門市「${targetMeta.name}」`;
+      render();
+    }
+
+    function addNewBranchStore(e) {
+      if (e) e.preventDefault();
+      const ms = App.multiStore;
+      const name = (ms.newBranchName || '').trim();
+      const city = (ms.newBranchCity || '').trim() || '台灣';
+      if (!name) { App.toast = '請輸入新分店名稱。'; render(); return; }
+      ms.storeData[ms.activeStoreId] = captureActiveStoreSnapshot();
+      const newId = 'store-' + Date.now().toString(36);
+      const meta = { id: newId, name, city };
+      ms.stores.push(meta);
+      ms.storeData[newId] = createBlankStoreSnapshot(meta);
+      ms.activeStoreId = newId;
+      ms.addingBranch = false;
+      ms.newBranchName = '';
+      ms.newBranchCity = '';
+      App.billing.storeCount = Math.max(App.billing.storeCount, ms.stores.length);
+      applyStoreSnapshot(ms.storeData[newId], meta);
+      App.toast = `已建立新分店「${name}」並自動切換至該店！`;
+      render();
+      pushStoreToCloud(newId);
+    }
+
+    function openCloudModal() {
+      App.cloud.draftUrl = App.cloud.url || '';
+      App.cloud.draftKey = App.cloud.anonKey || '';
+      App.cloud.draftBrandId = App.multiStore.brandId || 'brand-shiftcraft-demo';
+      App.cloud.modalOpen = true;
+      render();
+    }
+
+    function copyCloudSql() {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL).then(() => {
+          App.toast = '已複製資料庫建立腳本！請貼到 Supabase 的 SQL Editor 按 Run。';
+          render();
+        });
+      }
+    }
+
+    async function saveCloudConfig(e) {
+      if (e) e.preventDefault();
+      const url = (App.cloud.draftUrl || '').trim().replace(/\/+$/, '');
+      const key = (App.cloud.draftKey || '').trim();
+      const brandId = (App.cloud.draftBrandId || 'brand-shiftcraft-demo').trim();
+      if (!url || !key) {
+        App.toast = '請填入雲端專案網址（Project URL）與公開金鑰（anon key）。';
+        render();
+        return;
+      }
+      App.cloud.url = url;
+      App.cloud.anonKey = key;
+      App.multiStore.brandId = brandId;
+      try {
+        localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({ url, anonKey: key, brandId }));
+      } catch (err) {}
+      App.cloud.modalOpen = false;
+      render();
+      await initCloudSync(true);
+    }
+
+    function disconnectCloud() {
+      try { localStorage.removeItem(CLOUD_CFG_KEY); } catch (e) {}
+      if (_sbChannel && _sbClient) {
+        try { _sbClient.removeChannel(_sbChannel); } catch (e) {}
+      }
+      _sbClient = null;
+      _sbChannel = null;
+      App.cloud.url = '';
+      App.cloud.anonKey = '';
+      App.cloud.status = 'LOCAL';
+      App.cloud.error = null;
+      App.cloud.modalOpen = false;
+      App.toast = '已中斷雲端連線，恢復為單機模式。';
+      render();
+    }
+
+    async function pushStoreToCloud(storeId) {
+      if (!_sbClient || (App.cloud.status !== 'SYNCED' && App.cloud.status !== 'SYNCING')) return;
+      const ms = App.multiStore;
+      const sid = storeId || ms.activeStoreId;
+      const meta = ms.stores.find(s => s.id === sid) || { id: sid, name: App.storeSettings.name, city: '' };
+      const payload = sid === ms.activeStoreId ? captureActiveStoreSnapshot() : (ms.storeData[sid] || createBlankStoreSnapshot(meta));
+      ms.storeData[sid] = payload;
+      try {
+        App.cloud.status = 'SYNCING';
+        const { error } = await _sbClient.from('shiftcraft_stores').upsert({
+          brand_id: ms.brandId,
+          store_id: sid,
+          store_name: meta.name,
+          city: meta.city || '',
+          payload,
+          updated_by: CLOUD_CLIENT_ID,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'brand_id,store_id' });
+        if (error) throw error;
+        App.cloud.status = 'SYNCED';
+        App.cloud.error = null;
+        App.cloud.lastSyncedAt = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+      } catch (err) {
+        App.cloud.status = 'ERROR';
+        App.cloud.error = err && err.message ? err.message : String(err);
+      }
+    }
+
+    function scheduleCloudPush() {
+      if (_suppressCloudPush || !_sbClient) return;
+      if (App.cloud.status !== 'SYNCED' && App.cloud.status !== 'SYNCING') return;
+      if (_cloudPushTimer) clearTimeout(_cloudPushTimer);
+      _cloudPushTimer = setTimeout(() => {
+        pushStoreToCloud(App.multiStore.activeStoreId);
+      }, 650);
+    }
+
+    async function initCloudSync(showToast) {
+      let cfg = null;
+      try {
+        const raw = localStorage.getItem(CLOUD_CFG_KEY);
+        if (raw) cfg = JSON.parse(raw);
+      } catch (e) {}
+      if (!cfg && DEFAULT_CLOUD_CONFIG.url && DEFAULT_CLOUD_CONFIG.anonKey) {
+        cfg = DEFAULT_CLOUD_CONFIG;
+      }
+      if (!cfg || !cfg.url || !cfg.anonKey || typeof window.supabase === 'undefined') {
+        App.cloud.status = 'LOCAL';
+        return;
+      }
+
+      App.cloud.url = cfg.url;
+      App.cloud.anonKey = cfg.anonKey;
+      if (cfg.brandId) App.multiStore.brandId = cfg.brandId;
+      App.cloud.status = 'CONNECTING';
+      App.cloud.error = null;
+
+      try {
+        if (_sbChannel && _sbClient) {
+          try { _sbClient.removeChannel(_sbChannel); } catch (e) {}
+        }
+        _sbClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+        const { data, error } = await _sbClient
+          .from('shiftcraft_stores')
+          .select('*')
+          .eq('brand_id', App.multiStore.brandId)
+          .order('store_id', { ascending: true });
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          App.multiStore.stores = data.map(r => ({ id: r.store_id, name: r.store_name, city: r.city || '' }));
+          App.multiStore.storeData = {};
+          data.forEach(r => { App.multiStore.storeData[r.store_id] = r.payload; });
+          const urlStore = new URLSearchParams(window.location.search).get('store');
+          const pickId = (urlStore && App.multiStore.storeData[urlStore]) ? urlStore : data[0].store_id;
+          App.multiStore.activeStoreId = pickId;
+          const pickMeta = App.multiStore.stores.find(s => s.id === pickId);
+          _suppressCloudPush = true;
+          applyStoreSnapshot(App.multiStore.storeData[pickId], pickMeta);
+          _suppressCloudPush = false;
+          App.billing.storeCount = Math.max(App.billing.storeCount, App.multiStore.stores.length);
+        } else {
+          // 雲端尚無資料，自動上傳目前分店作為初始資料
+          App.multiStore.storeData[App.multiStore.activeStoreId] = captureActiveStoreSnapshot();
+          App.cloud.status = 'SYNCED';
+          for (const stMeta of App.multiStore.stores) {
+            await pushStoreToCloud(stMeta.id);
+          }
+        }
+
+        // 訂閱即時同步頻道（手機 LINE 打卡/請假 → 電腦後台 1 秒同步）
+        _sbChannel = _sbClient
+          .channel('shiftcraft-' + App.multiStore.brandId)
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'shiftcraft_stores',
+            filter: `brand_id=eq.${App.multiStore.brandId}`,
+          }, (payload) => {
+            const row = payload.new;
+            if (!row || row.updated_by === CLOUD_CLIENT_ID) return;
+            const exists = App.multiStore.stores.find(s => s.id === row.store_id);
+            if (!exists) {
+              App.multiStore.stores.push({ id: row.store_id, name: row.store_name, city: row.city || '' });
+            } else {
+              exists.name = row.store_name;
+              exists.city = row.city || '';
+            }
+            App.multiStore.storeData[row.store_id] = row.payload;
+            if (row.store_id === App.multiStore.activeStoreId) {
+              _suppressCloudPush = true;
+              applyStoreSnapshot(row.payload, exists || { id: row.store_id, name: row.store_name });
+              App.cloud.lastSyncedAt = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+              App.toast = `☁️ 已即時同步「${row.store_name}」的最新雲端資料`;
+              render();
+              _suppressCloudPush = false;
+            }
+          })
+          .subscribe();
+
+        App.cloud.status = 'SYNCED';
+        App.cloud.lastSyncedAt = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+        if (showToast) App.toast = `☁️ 雲端多店資料庫連線成功！所有分店資料已即時同步。`;
+        render();
+      } catch (err) {
+        App.cloud.status = 'ERROR';
+        App.cloud.error = err && err.message ? err.message : String(err);
+        if (showToast) App.toast = `雲端連線失敗：${App.cloud.error}`;
+        render();
+      }
+    }
+
+    function renderCloudModal() {
+      const c = App.cloud;
+      const isConnected = c.status === 'SYNCED' || c.status === 'SYNCING';
+      return `
+        <div class="no-print fixed inset-0 bg-slate-900/45 z-50 flex items-center justify-center p-4" onclick="App.cloud.modalOpen=false;render()">
+          <div class="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-lg overflow-hidden" onclick="event.stopPropagation()">
+            <div class="px-5 py-4 bg-[#0F766E] text-white flex items-center justify-between">
+              <div>
+                <div class="text-sm font-bold">☁️ 雲端多店即時同步設定</div>
+                <div class="text-[11px] text-teal-100 mt-0.5">連線後，員工手機 LINE 打卡與店長電腦後台 1 秒即時同步</div>
+              </div>
+              <button onclick="App.cloud.modalOpen=false;render()" class="px-2 py-1 rounded bg-white/15 hover:bg-white/25 text-xs font-bold cursor-pointer">關閉</button>
+            </div>
+            <form onsubmit="saveCloudConfig(event)" class="p-5 space-y-3.5 text-xs">
+              <div class="flex items-center justify-between px-3 py-2 rounded-lg ${isConnected ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-slate-50 border border-slate-200 text-slate-700'}">
+                <span class="font-bold">目前狀態：${isConnected ? '🟢 雲端即時連線中' : (c.status === 'ERROR' ? '🔴 連線發生錯誤' : '💾 單機模式（尚未連雲端）')}</span>
+                ${c.lastSyncedAt ? `<span class="mono-num text-[11px]">上次同步 ${c.lastSyncedAt}</span>` : ''}
+              </div>
+              ${c.error ? `<div class="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px] break-all">${c.error}</div>` : ''}
+              <div>
+                <label class="block font-semibold text-slate-700 mb-1">1. Supabase 專案網址 (Project URL)</label>
+                <input value="${c.draftUrl}" oninput="App.cloud.draftUrl=this.value" placeholder="https://xxxxxxxx.supabase.co" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
+              </div>
+              <div>
+                <label class="block font-semibold text-slate-700 mb-1">2. 公開金鑰 (anon public key)</label>
+                <input value="${c.draftKey}" oninput="App.cloud.draftKey=this.value" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
+              </div>
+              <div>
+                <label class="block font-semibold text-slate-700 mb-1">3. 餐飲品牌代碼（多品牌隔離用）</label>
+                <input value="${c.draftBrandId}" oninput="App.cloud.draftBrandId=this.value" placeholder="brand-shiftcraft-demo" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
+              </div>
+              <div class="pt-1 flex items-center justify-between gap-2">
+                <button type="button" onclick="copyCloudSql()" class="px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">複製資料表建立腳本</button>
+                <div class="flex items-center gap-2">
+                  ${isConnected ? `<button type="button" onclick="disconnectCloud()" class="px-3 py-2 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 font-semibold cursor-pointer">中斷連線</button>` : ''}
+                  <button type="submit" class="px-4 py-2 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">連線並立即同步</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      `;
     }
 
     function logoutToAuthScreen() {
@@ -1843,16 +2223,37 @@
                 </div>
               </div>
 
-              <!-- 門市資訊卡片 -->
-              <div class="rounded-lg bg-slate-50 border border-slate-200/80 p-2.5 space-y-1">
-                <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-800 truncate">
-                  ${ICONS.store}
-                  <span class="truncate">${st.name}</span>
+              <!-- 門市切換卡片（多店管理） -->
+              <div class="rounded-lg bg-slate-50 border border-slate-200/80 p-2.5 space-y-1.5">
+                <div class="flex items-center justify-between gap-1">
+                  <div class="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+                    ${ICONS.store}
+                    <span>切換門市 (${App.multiStore.stores.length} 店)</span>
+                  </div>
+                  ${hasRolePerm('settingsAdmin') ? `
+                    <button onclick="App.multiStore.addingBranch=!App.multiStore.addingBranch;render()" class="text-[10px] font-bold text-[#0F766E] hover:underline cursor-pointer">${App.multiStore.addingBranch ? '取消' : '+ 新增分店'}</button>
+                  ` : ''}
                 </div>
-                <div class="text-[11px] text-slate-500 mono-num flex items-center justify-between">
-                  <span>${hasRolePerm('hrDocs') || hasRolePerm('schedEdit') ? `編制 ${App.employees.length} 人 (外籍 ${foreignCnt})` : activeRoleMeta.name}</span>
-                  <span class="text-emerald-600 font-medium">營業中</span>
-                </div>
+                <select
+                  onchange="switchActiveStore(this.value)"
+                  class="w-full h-8 px-2 rounded-md border border-slate-200 bg-white text-xs font-bold text-slate-800 cursor-pointer focus:outline-none focus:border-[#0F766E]"
+                >
+                  ${App.multiStore.stores.map(s => `<option value="${s.id}" ${s.id === App.multiStore.activeStoreId ? 'selected' : ''}>${s.name}</option>`).join('')}
+                </select>
+                ${App.multiStore.addingBranch && hasRolePerm('settingsAdmin') ? `
+                  <form onsubmit="addNewBranchStore(event)" class="pt-1 space-y-1.5">
+                    <input value="${App.multiStore.newBranchName}" oninput="App.multiStore.newBranchName=this.value" placeholder="新分店名稱（例：新竹巨城店）" class="w-full h-7 px-2 rounded border border-slate-200 bg-white text-[11px]" />
+                    <div class="flex gap-1">
+                      <input value="${App.multiStore.newBranchCity}" oninput="App.multiStore.newBranchCity=this.value" placeholder="地區（選填）" class="flex-1 min-w-0 h-7 px-2 rounded border border-slate-200 bg-white text-[11px]" />
+                      <button type="submit" class="px-2.5 h-7 rounded bg-[#0F766E] text-white text-[11px] font-bold cursor-pointer shrink-0">建立</button>
+                    </div>
+                  </form>
+                ` : `
+                  <div class="text-[11px] text-slate-500 mono-num flex items-center justify-between">
+                    <span>${hasRolePerm('hrDocs') || hasRolePerm('schedEdit') ? `編制 ${App.employees.length} 人 (外籍 ${foreignCnt})` : activeRoleMeta.name}</span>
+                    <span class="text-emerald-600 font-medium">營業中</span>
+                  </div>
+                `}
               </div>
 
               <!-- 主選單 -->
@@ -1924,6 +2325,21 @@
               </div>
 
               <div class="flex items-center gap-2">
+                ${hasRolePerm('settingsAdmin') ? `
+                  <button
+                    onclick="openCloudModal()"
+                    class="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                      (App.cloud.status === 'SYNCED' || App.cloud.status === 'SYNCING')
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                        : (App.cloud.status === 'ERROR'
+                          ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100')
+                    }"
+                    title="雲端多店即時同步設定"
+                  >
+                    <span>${(App.cloud.status === 'SYNCED' || App.cloud.status === 'SYNCING') ? '🟢 雲端同步' : (App.cloud.status === 'CONNECTING' ? '⏳ 連線中' : (App.cloud.status === 'ERROR' ? '🔴 雲端錯誤' : '☁️ 雲端連線'))}</span>
+                  </button>
+                ` : ''}
                 <div data-no-i18n="1" class="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-semibold">
                   <button onclick="setAppLang('zh-TW')" class="px-2 py-1 rounded-md transition cursor-pointer ${App.lang==='zh-TW'?'bg-white text-[#0F766E] shadow-xs':'text-slate-600 hover:text-slate-900'}">繁體中文</button>
                   <button onclick="setAppLang('en')" class="px-2 py-1 rounded-md transition cursor-pointer ${App.lang==='en'?'bg-white text-[#0F766E] shadow-xs':'text-slate-600 hover:text-slate-900'}">English</button>
@@ -1960,6 +2376,9 @@
 
         <!-- 右側滑出式 LINE LIFF 手機抽屜（按需開啟，不干擾主工作區） -->
         ${App.liffDrawerOpen ? renderLiffDrawer() : ''}
+
+        <!-- 雲端多店同步設定彈窗 -->
+        ${App.cloud.modalOpen ? renderCloudModal() : ''}
 
         <!-- 右下角浮動 Toast -->
         ${App.toast ? `
@@ -4337,6 +4756,12 @@
           App.attendance.logs = parsed.attendance?.logs || App.attendance.logs;
           App.attendance.corrections = parsed.attendance?.corrections || App.attendance.corrections;
           App.storeSettings = { ...App.storeSettings, ...parsed.storeSettings };
+          if (parsed.multiStore && Array.isArray(parsed.multiStore.stores) && parsed.multiStore.stores.length) {
+            App.multiStore.stores = parsed.multiStore.stores;
+            if (parsed.multiStore.activeStoreId) App.multiStore.activeStoreId = parsed.multiStore.activeStoreId;
+            if (parsed.multiStore.brandId) App.multiStore.brandId = parsed.multiStore.brandId;
+            if (parsed.multiStore.storeData) App.multiStore.storeData = parsed.multiStore.storeData;
+          }
           if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
         }
       }
@@ -5505,6 +5930,9 @@
       _origRender();
       translateAppDom(document.getElementById('app'), App.lang);
       try {
+        const activeMeta = App.multiStore.stores.find(s => s.id === App.multiStore.activeStoreId);
+        if (activeMeta && App.storeSettings.name) activeMeta.name = App.storeSettings.name;
+        App.multiStore.storeData[App.multiStore.activeStoreId] = captureActiveStoreSnapshot();
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
           lang: App.lang,
           employees: App.employees,
@@ -5513,12 +5941,20 @@
           liff: { requests: App.liff.requests, balances: App.liff.balances },
           attendance: { logs: App.attendance.logs, corrections: App.attendance.corrections },
           storeSettings: App.storeSettings,
+          multiStore: {
+            brandId: App.multiStore.brandId,
+            activeStoreId: App.multiStore.activeStoreId,
+            stores: App.multiStore.stores,
+            storeData: App.multiStore.storeData,
+          },
         }));
       } catch (e) {}
+      scheduleCloudPush();
     };
 
     render();
     initRealLineLiff();
+    initCloudSync(false);
   </script>
 </body>
 </html>
