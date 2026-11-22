@@ -1500,7 +1500,7 @@
     const STORE_PERM_DEFS = [
       { key: 'schedEdit', label: '排班時間軸 & AI 排班', hint: '調整班表、彈性工時排班、AI 違規修復' },
       { key: 'storeHours', label: '店休日與營業時間調整', hint: '設定每週固定店休與臨時公休' },
-      { key: 'hrDocs', label: '人事建檔與證件 OCR', hint: '新增編輯員工與檢視證件影本' },
+      { key: 'hrDocs', label: '人事建檔與證件管理', hint: '新增編輯員工與檢視證件影本' },
       { key: 'payrollManage', label: '薪資結算與全店薪資條', hint: '檢視全店實發總額與發送薪資條' },
       { key: 'approveLeave', label: '簽核請假與調班申請', hint: '核准或駁回請假調班並連動班表' },
       { key: 'approvePunch', label: '簽核漏打卡補卡申請', hint: '查核見證人並修補出勤紀錄' },
@@ -3186,19 +3186,33 @@
           })() : ''}
 
           ${st.subTab === 'RBAC' ? `
-            <div class="space-y-4">
-              <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden text-xs">
-                <div class="px-4 py-3 border-b border-[var(--border)]"><h2 class="text-sm font-bold text-slate-900">角色權限矩陣 (RBAC)</h2></div>
+            <div class="grid grid-cols-1 xl:grid-cols-[1.08fr_0.92fr] gap-4 items-start text-xs">
+              <!-- 左欄：帳號權限設定 -->
+              <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
+                <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-2">
+                  <div>
+                    <h2 class="text-sm font-bold text-slate-900">帳號權限設定</h2>
+                    <p class="text-[11px] text-slate-500 mt-0.5">點擊切換各角色的功能權限，右側管理員帳號將即時套用</p>
+                  </div>
+                </div>
                 <div class="overflow-x-auto">
-                  <table class="w-full border-collapse text-left min-w-[720px]">
-                    <thead><tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500"><th class="p-3">權限項目</th>${STORE_ROLE_DEFS.map(r => `<th class="p-3 text-center">${r.short}</th>`).join('')}</tr></thead>
+                  <table class="w-full border-collapse text-left">
+                    <thead>
+                      <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
+                        <th class="py-2.5 px-3.5">權限項目</th>
+                        ${STORE_ROLE_DEFS.map(r => `<th class="py-2.5 px-1.5 text-center w-[58px] whitespace-nowrap">${r.short}</th>`).join('')}
+                      </tr>
+                    </thead>
                     <tbody>
                       ${STORE_PERM_DEFS.map(p => `
-                        <tr class="border-b border-slate-100 last:border-b-0">
-                          <td class="p-3"><div class="font-bold text-slate-900">${p.label}</div><div class="text-[11px] text-slate-500">${p.hint}</div></td>
+                        <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60">
+                          <td class="py-2.5 px-3.5">
+                            <div class="font-bold text-slate-900">${p.label}</div>
+                            <div class="text-[11px] text-slate-500">${p.hint}</div>
+                          </td>
                           ${STORE_ROLE_DEFS.map(r => {
                             const allowed = !!(st.permissions[r.code] && st.permissions[r.code][p.key]);
-                            return `<td class="p-2.5 text-center"><button onclick="toggleRolePerm('${r.code}','${p.key}')" class="px-3 py-1 rounded-md font-semibold text-[11px] border ${allowed ? 'bg-teal-50 text-[#0F766E] border-teal-200' : 'bg-slate-50 text-slate-400 border-slate-200'} ${r.locked ? 'cursor-not-allowed' : 'cursor-pointer'}">${allowed ? '允許' : '禁止'}</button></td>`;
+                            return `<td class="py-2 px-1 text-center"><button onclick="toggleRolePerm('${r.code}','${p.key}')" class="w-12 py-1 rounded-md font-semibold text-[11px] border transition ${allowed ? 'bg-teal-50 text-[#0F766E] border-teal-200 hover:bg-teal-100/70' : 'bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100'} ${r.locked ? 'cursor-not-allowed' : 'cursor-pointer'}">${allowed ? '允許' : '禁止'}</button></td>`;
                           }).join('')}
                         </tr>
                       `).join('')}
@@ -3206,72 +3220,55 @@
                   </table>
                 </div>
               </div>
-              <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden text-xs">
+
+              <!-- 右欄：門市管理員帳號與權限指派 -->
+              <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
                 <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 class="text-sm font-bold text-slate-900">門市管理員名單與權限指派 (${st.admins.length} 位)</h3>
-                    <p class="text-[11px] text-slate-500 mt-0.5">調整管理員角色後，系統將即時套用上方對應之 RBAC 權限項目</p>
+                    <p class="text-[11px] text-slate-500 mt-0.5">指派角色後即時連動左側帳號權限與 LINE 簽核推播</p>
                   </div>
                 </div>
 
-                <div class="p-4 border-b border-[var(--border)] bg-slate-50/60">
-                  <form onsubmit="addStoreAdmin(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_170px_1fr_auto] gap-2">
-                    <input value="${d.name}" oninput="App.storeSettings.adminDraft.name=this.value" list="all-emp-names" placeholder="管理員姓名（可選現有員工）" class="h-8 px-3 rounded-lg border border-slate-200 bg-white font-semibold" />
+                <div class="p-3.5 border-b border-[var(--border)] bg-slate-50/60">
+                  <form onsubmit="addStoreAdmin(event)" class="grid grid-cols-2 gap-2">
+                    <input value="${d.name}" oninput="App.storeSettings.adminDraft.name=this.value" list="all-emp-names" placeholder="管理員姓名（可選現有員工）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold" />
                     <datalist id="all-emp-names">${App.employees.map(e => `<option value="${e.name}"></option>`).join('')}</datalist>
-                    <input value="${d.title}" oninput="App.storeSettings.adminDraft.title=this.value" placeholder="職稱（如：儲備店長）" class="h-8 px-3 rounded-lg border border-slate-200 bg-white" />
-                    <select onchange="App.storeSettings.adminDraft.role=this.value" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold">${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${d.role===r.code?'selected':''}>${r.name}</option>`).join('')}</select>
-                    <input value="${d.contact}" oninput="App.storeSettings.adminDraft.contact=this.value" placeholder="Email 或手機號碼" class="h-8 px-3 rounded-lg border border-slate-200 bg-white" />
-                    <button type="submit" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">+ 新增管理員</button>
+                    <input value="${d.title}" oninput="App.storeSettings.adminDraft.title=this.value" placeholder="職稱（如：儲備店長）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
+                    <select onchange="App.storeSettings.adminDraft.role=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${d.role===r.code?'selected':''}>${r.name}</option>`).join('')}</select>
+                    <div class="flex gap-1.5">
+                      <input value="${d.contact}" oninput="App.storeSettings.adminDraft.contact=this.value" placeholder="Email 或手機號碼" class="flex-1 min-w-0 h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
+                      <button type="submit" class="shrink-0 h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">+ 新增</button>
+                    </div>
                   </form>
                 </div>
 
-                <div class="overflow-x-auto">
-                  <table class="w-full border-collapse text-left min-w-[820px]">
-                    <thead>
-                      <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
-                        <th class="p-3">管理人員 / 職稱</th>
-                        <th class="p-3">管理權限角色</th>
-                        <th class="p-3">已啟用權限摘要</th>
-                        <th class="p-3">聯絡資訊 & LINE 綁定</th>
-                        <th class="p-3 text-right">帳號狀態</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${st.admins.map(a => {
-                        const rolePerms = st.permissions[a.role] || {};
-                        const permChips = STORE_PERM_DEFS.filter(p => rolePerms[p.key]).map(p => p.label.split(' ')[0].replace(/與.*/, '').replace(/及.*/, ''));
-                        return `
-                          <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 ${!a.active ? 'opacity-50' : ''}">
-                            <td class="p-3">
-                              <div class="font-bold text-slate-900">${a.name}</div>
-                              <div class="text-[11px] text-slate-500">${a.title} · ${a.scope}</div>
-                            </td>
-                            <td class="p-3">
-                              <select onchange="updateAdminRole('${a.id}', this.value)" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
-                                ${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${a.role===r.code?'selected':''}>${r.name}</option>`).join('')}
-                              </select>
-                            </td>
-                            <td class="p-3">
-                              <div class="flex flex-wrap gap-1 max-w-[260px]">
-                                ${permChips.length > 0 ? permChips.map(c => `<span class="px-1.5 py-0.5 rounded bg-teal-50 text-[#0F766E] border border-teal-200/70 text-[10px] font-semibold">${c}</span>`).join('') : '<span class="text-[11px] text-slate-400">僅限員工端</span>'}
-                              </div>
-                            </td>
-                            <td class="p-3">
-                              <div class="mono-num text-slate-800">${a.contact}</div>
-                              <div class="text-[10px] font-semibold mt-0.5 ${a.lineBound ? 'text-emerald-600' : 'text-amber-600'}">
-                                ${a.lineBound ? '已綁定 LINE 簽核推播' : '待接受 LINE 綁定邀請'}
-                              </div>
-                            </td>
-                            <td class="p-3 text-right">
-                              <button type="button" onclick="toggleAdminActive('${a.id}')" class="px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer border ${a.active ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}">
-                                ${a.active ? '啟用中' : '已停用'}
-                              </button>
-                            </td>
-                          </tr>
-                        `;
-                      }).join('')}
-                    </tbody>
-                  </table>
+                <div class="divide-y divide-slate-100">
+                  ${st.admins.map(a => {
+                    const rolePerms = st.permissions[a.role] || {};
+                    const permChips = STORE_PERM_DEFS.filter(p => rolePerms[p.key]).map(p => p.label.split(' ')[0].replace(/與.*/, '').replace(/及.*/, ''));
+                    return `
+                      <div class="p-3.5 space-y-2 hover:bg-slate-50/60 transition ${!a.active ? 'opacity-55' : ''}">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                          <div class="min-w-0">
+                            <div class="font-bold text-slate-900 text-xs">${a.name} <span class="font-normal text-slate-500">· ${a.title}</span></div>
+                            <div class="text-[11px] text-slate-500 mono-num mt-0.5">${a.contact} · <span class="font-semibold ${a.lineBound ? 'text-emerald-600' : 'text-amber-600'}">${a.lineBound ? '已綁定 LINE 簽核推播' : '待接受 LINE 綁定邀請'}</span></div>
+                          </div>
+                          <div class="flex items-center gap-1.5 shrink-0">
+                            <select onchange="updateAdminRole('${a.id}', this.value)" class="h-7 px-2 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold cursor-pointer">
+                              ${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${a.role===r.code?'selected':''}>${r.short}</option>`).join('')}
+                            </select>
+                            <button type="button" onclick="toggleAdminActive('${a.id}')" class="px-2 py-1 rounded-full text-[10px] font-semibold cursor-pointer border ${a.active ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}">
+                              ${a.active ? '啟用中' : '已停用'}
+                            </button>
+                          </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1">
+                          ${permChips.length > 0 ? permChips.map(c => `<span class="px-1.5 py-0.5 rounded bg-teal-50 text-[#0F766E] border border-teal-200/70 text-[10px] font-semibold">${c}</span>`).join('') : '<span class="text-[11px] text-slate-400">僅限員工端</span>'}
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
                 </div>
               </div>
             </div>
@@ -4701,6 +4698,11 @@
       'GPS 圍籬與 Wi-Fi 打卡': { en: 'GPS Geofence & Wi-Fi', ja: 'GPS範囲・Wi-Fi打刻' },
       '工作站與最低人力': { en: 'Stations & Min Staff', ja: 'ポジション・最低人数' },
       '帳號與權限': { en: 'Accounts & Permissions', ja: 'アカウント・権限' },
+      '帳號權限設定': { en: 'Account Permissions', ja: 'アカウント権限設定' },
+      '人事建檔與證件管理': { en: 'HR Onboarding & Documents', ja: '人事登録・書類管理' },
+      '點擊切換各角色的功能權限，右側管理員帳號將即時套用': { en: 'Toggle role permissions; admin accounts on the right update live', ja: '各ロールの権限を切替えると右側の管理者アカウントへ即時反映されます' },
+      '指派角色後即時連動左側帳號權限與 LINE 簽核推播': { en: 'Assigning a role syncs permissions & LINE approval push immediately', ja: 'ロール割当で左側の権限とLINE承認通知が即時連動します' },
+      '+ 新增': { en: '+ Add', ja: '+ 追加' },
       '角色權限 (RBAC) 與管理員': { en: 'Roles (RBAC) & Admins', ja: '権限 (RBAC)・管理者' },
       '店鋪基本資料與店休日': { en: 'Store Profile & Holidays', ja: '店舗基本情報・休業日' },
       '門市名稱': { en: 'Store Name', ja: '店舗名' },
