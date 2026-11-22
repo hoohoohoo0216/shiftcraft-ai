@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>班匠 ShiftCraft AI｜台灣餐飲營運與智慧排班平台</title>
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     :root {
       --bg: #F8FAFC;
@@ -330,6 +331,7 @@
       liffDrawerOpen: false, // 統一的右側 LINE LIFF 模擬抽屜（不佔據日常工作空間）
       liffRole: 'STAFF', // STAFF | MANAGER
       liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
+      lineLiff: { liffId: '2012747321-uH6zNzCm', ready: false, inClient: false, loggedIn: false, profile: null, error: null },
       employees: JSON.parse(JSON.stringify(INITIAL_UNIFIED_EMPLOYEES)),
 
       sched: {
@@ -579,10 +581,59 @@
     }
 
     function loginWithLine() {
+      if (typeof liff !== 'undefined' && App.lineLiff && App.lineLiff.ready && !liff.isLoggedIn()) {
+        try {
+          liff.login({ redirectUri: window.location.href });
+          return;
+        } catch (e) {}
+      }
       App.auth.loggedIn = true;
       App.auth.lastLoginAt = '2026-11-21 剛剛 (LINE SSO)';
       App.toast = '已透過 LINE 企業帳號快速登入班匠 ShiftCraft 後台。';
       render();
+    }
+
+    function closeLiffWindowOrDrawer() {
+      if (typeof liff !== 'undefined' && App.lineLiff && App.lineLiff.inClient && liff.isInClient()) {
+        try { liff.closeWindow(); return; } catch (e) {}
+      }
+      App.liffDrawerOpen = false;
+      render();
+    }
+
+    async function initRealLineLiff() {
+      if (typeof liff === 'undefined' || !App.lineLiff || !App.lineLiff.liffId) return;
+      try {
+        await liff.init({ liffId: App.lineLiff.liffId });
+        App.lineLiff.ready = true;
+        App.lineLiff.inClient = liff.isInClient();
+        App.lineLiff.loggedIn = liff.isLoggedIn();
+        const urlParams = new URLSearchParams(window.location.search);
+        const forceLiffView = urlParams.get('liff') === '1';
+
+        if (App.lineLiff.inClient || forceLiffView) {
+          if (!liff.isLoggedIn()) {
+            liff.login({ redirectUri: window.location.href });
+            return;
+          }
+          try {
+            const prof = await liff.getProfile();
+            App.lineLiff.profile = prof;
+          } catch (e) {}
+          App.auth.loggedIn = true;
+          App.auth.lastLoginAt = '剛剛 (LINE LIFF)';
+          App.liffDrawerOpen = true;
+          render();
+        } else if (App.lineLiff.loggedIn) {
+          try {
+            const prof = await liff.getProfile();
+            App.lineLiff.profile = prof;
+            render();
+          } catch (e) {}
+        }
+      } catch (err) {
+        App.lineLiff.error = err && err.message ? err.message : String(err);
+      }
     }
 
     function logoutToAuthScreen() {
@@ -3937,14 +3988,25 @@
       const isMgr = canLineApprove && App.liffRole === 'MANAGER';
       const isStaffOnly = App.storeSettings.activeRole === 'STAFF';
       const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
+      const lineProf = App.lineLiff && App.lineLiff.profile;
+      const isInLineApp = Boolean(App.lineLiff && App.lineLiff.inClient);
 
       return `
-        <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="App.liffDrawerOpen=false;render()">
-          <aside class="w-full max-w-[380px] bg-[#F4F5F7] h-full shadow-2xl flex flex-col border-l border-slate-200" onclick="event.stopPropagation()">
+        <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
+          <aside class="w-full ${isInLineApp ? 'max-w-none' : 'max-w-[380px] border-l border-slate-200'} bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
             <div class="bg-[#06C755] text-white p-4 space-y-2.5">
-              <div class="flex justify-between items-center text-xs">
-                <span class="font-bold">${isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器'}</span>
-                <button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
+              <div class="flex justify-between items-center text-xs gap-2">
+                <div class="flex items-center gap-2 min-w-0">
+                  ${lineProf && lineProf.pictureUrl ? `<img src="${lineProf.pictureUrl}" class="w-7 h-7 rounded-full border border-white/60 shrink-0 object-cover" />` : ''}
+                  <div class="min-w-0">
+                    <div class="font-bold truncate">${lineProf ? `${lineProf.displayName} · 班匠 LINE` : (isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器')}</div>
+                    ${lineProf ? `<div class="text-[10px] text-white/85">LINE LIFF 已連線 · ${App.storeSettings.name}</div>` : ''}
+                  </div>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  ${isInLineApp ? `<button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">後台版</button>` : ''}
+                  <button onclick="closeLiffWindowOrDrawer()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
+                </div>
               </div>
               ${canLineApprove ? `
                 <div class="grid grid-cols-2 gap-1 bg-black/15 p-1 rounded-lg text-[11px] font-bold">
@@ -3962,7 +4024,7 @@
                 >
                   ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
                 </select>
-              ` : (!isMgr ? `<div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold">登入員工：${emp.name} (${emp.code})</div>` : '')}
+              ` : (!isMgr ? `<div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold">登入員工：${lineProf ? lineProf.displayName : emp.name} (${emp.code})</div>` : '')}
             </div>
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
@@ -4192,6 +4254,26 @@
               })() : ''}
               `}
             </div>
+            ${!isMgr ? `
+              <nav class="shrink-0 bg-white border-t border-slate-200 grid grid-cols-4 text-[11px] font-bold">
+                <button onclick="App.mainTab='SCHED';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='SCHED'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                  <span class="text-sm leading-none">📅</span>
+                  <span>班表</span>
+                </button>
+                <button onclick="App.mainTab='LIFF_LEAVE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='LEAVE'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                  <span class="text-sm leading-none">📝</span>
+                  <span>請假</span>
+                </button>
+                <button onclick="App.mainTab='ATTENDANCE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='ATT'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                  <span class="text-sm leading-none">⏱️</span>
+                  <span>打卡</span>
+                </button>
+                <button onclick="App.mainTab='PAYROLL';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='PAYROLL'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                  <span class="text-sm leading-none">💰</span>
+                  <span>薪資條</span>
+                </button>
+              </nav>
+            ` : ''}
           </aside>
         </div>
       `;
@@ -4656,6 +4738,9 @@
       '請假單': { en: 'Leave Request', ja: '休暇申請' },
       '調班單': { en: 'Shift Swap', ja: 'シフト交代申請' },
       '請假': { en: 'Leave', ja: '休暇' },
+      '班表': { en: 'Schedule', ja: 'シフト' },
+      '薪資條': { en: 'Payslip', ja: '給与明細' },
+      '後台版': { en: 'Admin', ja: '管理画面' },
       '調班': { en: 'Swap', ja: '交代' },
       '簽核備註（選填）': { en: 'Approval note (optional)', ja: '承認メモ（任意）' },
       '全店夥伴年度假別餘額總表': { en: 'Store Annual Leave Balances', ja: '全従業員 年間休暇残数一覧' },
@@ -5429,6 +5514,7 @@
     };
 
     render();
+    initRealLineLiff();
   </script>
 </body>
 </html>
