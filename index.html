@@ -75,6 +75,8 @@
       mapPin: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
       store: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/><path d="M22 7v3a2 2 0 0 1-2 2v0a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7"/></svg>',
       camera: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+      creditCard: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>',
+      shield: '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     };
 
     // ============================================================================
@@ -477,8 +479,221 @@
           { code: 'PREP', name: '後場煮茶・備料珍珠', shortName: '後場備料', desc: '原葉茶湯熬煮、蜜製波霸、切果收班', badgeBg: '#E0E7FF', badgeText: '#3730A3', minMorning: 1, minLunchPeak: 1, minEvening: 1, requiresCert: false, active: true },
         ],
         workstationDraft: { code: '', name: '', shortName: '', desc: '', colorKey: 'PURPLE' },
-      }
+      },
+
+      auth: {
+        loggedIn: true,
+        authMode: 'LOGIN', // LOGIN | REGISTER
+        email: 'boss@shanbei-tea.tw',
+        companyName: '山焙森茶餐飲有限公司',
+        ownerName: '吳承翰',
+        twoFactorEnabled: true,
+        lineAdminBound: true,
+        lastLoginAt: '2026-11-21 09:15',
+        loginDraft: { email: 'boss@shanbei-tea.tw', password: '••••••••••••', companyName: '', storeCount: 1 },
+        pwdDraft: { current: '', next: '', confirm: '' },
+        sessions: [
+          { id: 'sess-1', device: 'MacBook Pro · Chrome 131', location: '台北市中山區 (114.36.82.19)', lastActive: '目前使用中', current: true },
+          { id: 'sess-2', device: '門市 iPad POS · Safari', location: '中山南西店 Wi-Fi', lastActive: '18 分鐘前', current: false },
+          { id: 'sess-3', device: 'iPhone 16 Pro · LINE LIFF', location: '台北市信義區', lastActive: '1 小時前', current: false },
+        ],
+      },
+
+      billing: {
+        subTab: 'ACCOUNT', // ACCOUNT | PLANS | PAYMENT | INVOICES
+        planCode: 'PRO', // STARTER | PRO | ENTERPRISE
+        billingCycle: 'MONTHLY', // MONTHLY | YEARLY
+        storeCount: 2,
+        autoRenew: true,
+        nextChargeDate: '2026-12-01',
+        gateway: 'ECPAY', // ECPAY | NEWEBPAY | STRIPE
+        gatewayMode: 'SANDBOX', // SANDBOX | LIVE
+        gatewayConfig: {
+          ECPAY: { merchantId: '3002607', hashKey: 'pwFHCqoQZGmho4w6', webhookUrl: 'https://api.shiftcraft.tw/webhooks/ecpay/recurring', connected: true },
+          NEWEBPAY: { merchantId: 'MS15492810', hashKey: 'k9LmPqR7vXyZ2aBc', webhookUrl: 'https://api.shiftcraft.tw/webhooks/newebpay/period', connected: false },
+          STRIPE: { merchantId: 'acct_1QShiftCraftTW', hashKey: 'pk_test_51ShiftCraftDemo', webhookUrl: 'https://api.shiftcraft.tw/webhooks/stripe/billing', connected: false },
+        },
+        cards: [
+          { id: 'card-1', brand: 'VISA', last4: '4242', exp: '08/29', holder: 'WU CHENG HAN', isDefault: true },
+        ],
+        cardDraft: { number: '', exp: '', cvc: '', holder: '' },
+        invoiceInfo: { title: '山焙森茶餐飲有限公司', ubn: '83492105', email: 'accounting@shanbei-tea.tw' },
+        checkoutModal: null,
+        invoices: [
+          { id: 'INV-2026-11', date: '2026-11-01', period: '2026/11/01–11/30', plan: '成長連鎖版 Pro', stores: 2, amount: 4980, gateway: '綠界 ECPay', status: 'PAID', eInvoiceNo: 'AB-84920113' },
+          { id: 'INV-2026-10', date: '2026-10-01', period: '2026/10/01–10/31', plan: '成長連鎖版 Pro', stores: 2, amount: 4980, gateway: '綠界 ECPay', status: 'PAID', eInvoiceNo: 'AB-73105842' },
+          { id: 'INV-2026-09', date: '2026-09-01', period: '2026/09/01–09/30', plan: '輕量單店版 Starter', stores: 1, amount: 1290, gateway: '綠界 ECPay', status: 'PAID', eInvoiceNo: 'AA-61984210' },
+        ],
+      },
     };
+
+    const SAAS_PLANS = [
+      {
+        code: 'STARTER', name: '輕量單店版 Starter', badge: '單店首選', monthlyPrice: 1290, maxStaff: '每店最多 15 人',
+        desc: '適合剛起步的咖啡廳、手搖飲與早午餐單店',
+        features: ['AI 排班與勞基法即時預警', 'LINE LIFF 員工打卡與請假簽核', '基本出勤 CSV 報表匯出', '店長 LINE 即時通知推播'],
+      },
+      {
+        code: 'PRO', name: '成長連鎖版 Pro', badge: '最受歡迎', monthlyPrice: 2490, maxStaff: '每店最多 50 人',
+        desc: '專為成長型餐飲品牌與多店門市打造的完整營運方案',
+        features: ['含 Starter 全部功能', '人事證件拍照建檔 & 浮水印保存', '勞健保級距自動試算 + 銀行薪轉 CSV', '店長休假自動轉值班副店長 LINE 代理簽核', '多語系支援（繁中 / EN / 日本語）'],
+      },
+      {
+        code: 'ENTERPRISE', name: '企業旗艦版 Enterprise', badge: '總部必備', monthlyPrice: 4990, maxStaff: '不限員工人數',
+        desc: '適合 5 店以上餐飲集團、總部人資與跨店調度管理',
+        features: ['含 Pro 全部功能', '多門市總部人事與營運儀表板', 'POS / ERP / 會計系統 Webhook API 串接', '專屬導入顧問與 99.9% SLA 保障'],
+      },
+    ];
+
+    const PAYMENT_GATEWAYS = [
+      { code: 'ECPAY', name: '綠界科技 ECPay', desc: '支援台灣信用卡定期定額 (PeriodPayment)、自動開立 B2B 三聯式電子發票', fee: '信用卡 2.75% · 免年費' },
+      { code: 'NEWEBPAY', name: '藍新金流 NewebPay', desc: '支援信用卡定期定額、LINE Pay、Apple Pay 與台灣各大銀行自動請款', fee: '信用卡 2.8% · LINE Pay 3%' },
+      { code: 'STRIPE', name: 'Stripe Billing', desc: '支援國際信用卡自動訂閱扣款、Smart Retries 失敗重試與 Webhook 事件同步', fee: '國際卡 2.9% + NT$10' },
+    ];
+
+    function getPlanMonthlyTotal(planCode, storeCount, billingCycle) {
+      const p = SAAS_PLANS.find(x => x.code === (planCode || App.billing.planCode)) || SAAS_PLANS[1];
+      const stores = Math.max(1, Number(storeCount || App.billing.storeCount) || 1);
+      const cycle = billingCycle || App.billing.billingCycle;
+      const unit = cycle === 'YEARLY' ? Math.round(p.monthlyPrice * 0.8) : p.monthlyPrice;
+      return { plan: p, unit, stores, monthlyTotal: unit * stores, chargeNow: cycle === 'YEARLY' ? unit * stores * 12 : unit * stores };
+    }
+
+    function submitAuthForm(e) {
+      e.preventDefault();
+      const d = App.auth.loginDraft;
+      if (!d.email.trim()) { App.toast = '請輸入登入 Email 帳號。'; render(); return; }
+      App.auth.email = d.email.trim();
+      if (App.auth.authMode === 'REGISTER' && d.companyName.trim()) {
+        App.auth.companyName = d.companyName.trim();
+        App.billing.storeCount = Math.max(1, Number(d.storeCount) || 1);
+      }
+      App.auth.loggedIn = true;
+      App.auth.lastLoginAt = '2026-11-21 剛剛';
+      App.toast = App.auth.authMode === 'REGISTER'
+        ? `歡迎加入班匠 ShiftCraft！「${App.auth.companyName}」已開通 14 天免費試用。`
+        : `歡迎回來，已使用「${App.auth.email}」登入營運後台。`;
+      render();
+    }
+
+    function loginWithLine() {
+      App.auth.loggedIn = true;
+      App.auth.lastLoginAt = '2026-11-21 剛剛 (LINE SSO)';
+      App.toast = '已透過 LINE 企業帳號快速登入班匠 ShiftCraft 後台。';
+      render();
+    }
+
+    function logoutToAuthScreen() {
+      App.auth.loggedIn = false;
+      App.auth.authMode = 'LOGIN';
+      App.toast = '已安全登出系統，您可重新登入或測試新餐飲品牌註冊流程。';
+      render();
+    }
+
+    function updateAccountPassword(e) {
+      e.preventDefault();
+      const p = App.auth.pwdDraft;
+      if (!p.next || p.next.length < 6) { App.toast = '新密碼長度至少須 6 碼。'; render(); return; }
+      if (p.next !== p.confirm) { App.toast = '兩次輸入的新密碼不一致，請重新確認。'; render(); return; }
+      App.auth.pwdDraft = { current: '', next: '', confirm: '' };
+      App.toast = '帳號密碼已更新，下次登入請使用新密碼。';
+      render();
+    }
+
+    function revokeSession(sessId) {
+      App.auth.sessions = App.auth.sessions.filter(s => s.id !== sessId);
+      App.toast = '已強制登出該裝置連線。';
+      render();
+    }
+
+    function openPlanCheckout(planCode) {
+      App.billing.checkoutModal = { planCode };
+      render();
+    }
+
+    function confirmPlanCheckout() {
+      const m = App.billing.checkoutModal;
+      if (!m) return;
+      const calc = getPlanMonthlyTotal(m.planCode, App.billing.storeCount, App.billing.billingCycle);
+      const gw = PAYMENT_GATEWAYS.find(g => g.code === App.billing.gateway) || PAYMENT_GATEWAYS[0];
+      App.billing.planCode = m.planCode;
+      App.billing.checkoutModal = null;
+      const now = new Date();
+      const invId = `INV-2026-${String(App.billing.invoices.length + 10).padStart(2, '0')}`;
+      App.billing.invoices.unshift({
+        id: invId,
+        date: '2026-11-21',
+        period: App.billing.billingCycle === 'YEARLY' ? '2026/11/21–2027/11/20' : '2026/11/21–12/20',
+        plan: calc.plan.name,
+        stores: calc.stores,
+        amount: calc.chargeNow,
+        gateway: gw.name.split(' ')[0],
+        status: 'PAID',
+        eInvoiceNo: 'AC-' + String(Math.floor(10000000 + Math.random() * 89999999)),
+      });
+      App.toast = `金流授權成功！已切換至「${calc.plan.name}」（${calc.stores} 店 · NT$${calc.chargeNow.toLocaleString()}），電子發票已開立。`;
+      render();
+    }
+
+    function testPaymentGateway(gwCode) {
+      const code = gwCode || App.billing.gateway;
+      const gw = PAYMENT_GATEWAYS.find(g => g.code === code) || PAYMENT_GATEWAYS[0];
+      App.billing.gateway = code;
+      App.billing.gatewayConfig[code].connected = true;
+      App.toast = `${gw.name}（${App.billing.gatewayMode === 'LIVE' ? '正式環境' : '沙盒測試'}）API 金鑰驗證通過，Webhook 訂閱回呼正常。`;
+      render();
+    }
+
+    function addPaymentCard(e) {
+      e.preventDefault();
+      const d = App.billing.cardDraft;
+      const digits = (d.number || '').replace(/\D/g, '');
+      if (digits.length < 12) { App.toast = '請輸入有效的信用卡卡號（至少 12 碼）。'; render(); return; }
+      const last4 = digits.slice(-4);
+      const brand = digits.startsWith('5') ? 'MASTERCARD' : digits.startsWith('3') ? 'JCB' : 'VISA';
+      App.billing.cards.forEach(c => c.isDefault = false);
+      App.billing.cards.unshift({
+        id: 'card-' + Date.now(),
+        brand,
+        last4,
+        exp: d.exp || '12/29',
+        holder: (d.holder || App.auth.ownerName || 'OWNER').toUpperCase(),
+        isDefault: true,
+      });
+      App.billing.cardDraft = { number: '', exp: '', cvc: '', holder: '' };
+      App.toast = `已透過 Token 化安全綁定 ${brand} •••• ${last4} 為預設月費扣款卡。`;
+      render();
+    }
+
+    function simulateMonthlyCharge() {
+      const calc = getPlanMonthlyTotal();
+      const gw = PAYMENT_GATEWAYS.find(g => g.code === App.billing.gateway) || PAYMENT_GATEWAYS[0];
+      const invId = `INV-2026-12-${String(App.billing.invoices.length + 1).padStart(2, '0')}`;
+      App.billing.invoices.unshift({
+        id: invId,
+        date: '2026-12-01',
+        period: '2026/12/01–12/31',
+        plan: calc.plan.name,
+        stores: calc.stores,
+        amount: calc.monthlyTotal,
+        gateway: gw.name.split(' ')[0],
+        status: 'PAID',
+        eInvoiceNo: 'AD-' + String(Math.floor(10000000 + Math.random() * 89999999)),
+      });
+      App.toast = `定期定額扣款成功（${gw.name}）：NT$${calc.monthlyTotal.toLocaleString()}，三聯式電子發票已寄送至 ${App.billing.invoiceInfo.email}。`;
+      render();
+    }
+
+    function exportInvoicesCsv() {
+      const headers = ['帳單編號', '扣款日期', '計費期間', '訂閱方案', '門市數', '扣款金額(TWD)', '金流管道', '狀態', '電子發票號碼'];
+      const rows = App.billing.invoices.map(i => [i.id, i.date, i.period, i.plan, i.stores, i.amount, i.gateway, i.status === 'PAID' ? '已付款' : '待付款', i.eInvoiceNo]);
+      const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'ShiftCraft_SaaS訂閱帳單紀錄.csv'; a.click(); URL.revokeObjectURL(url);
+      App.toast = '已匯出 SaaS 訂閱帳單與電子發票紀錄 CSV。';
+      render();
+    }
 
     App.payroll.attByMonth = {
       '2026-10': initMonthAtt('2026-10', App.employees),
@@ -1449,6 +1664,11 @@
       const foreignCnt = App.employees.filter(e => e.nationalityType === 'FOREIGN').length;
       const activeRoleMeta = STORE_ROLE_DEFS.find(r => r.code === st.activeRole) || STORE_ROLE_DEFS[0];
 
+      if (!App.auth.loggedIn) {
+        document.getElementById('app').innerHTML = renderAuthScreen();
+        return;
+      }
+
       const NAV_ITEMS = [
         { key: 'SCHED', label: '排班時間軸', icon: ICONS.calendar, perm: 'schedEdit' },
         { key: 'HR', label: '人事建檔', icon: ICONS.users, perm: 'hrDocs' },
@@ -1456,6 +1676,7 @@
         { key: 'LIFF_LEAVE', label: '請假調班簽核', icon: ICONS.inbox, perm: 'approveLeave', badge: pendingApprovals },
         { key: 'ATTENDANCE', label: '打卡與補卡', icon: ICONS.clock, perm: 'approvePunch', badge: pendingMissed },
         { key: 'SETTINGS', label: '店鋪與權限', icon: ICONS.settings, perm: 'settingsAdmin' },
+        { key: 'BILLING', label: '帳號與訂閱', icon: ICONS.creditCard, perm: 'settingsAdmin' },
       ];
       const currentNav = NAV_ITEMS.find(n => n.key === App.mainTab) || NAV_ITEMS[0];
 
@@ -1513,8 +1734,8 @@
               </nav>
             </div>
 
-            <!-- 底部角色切換器 -->
-            <div class="hidden lg:block p-4 border-t border-[var(--border)] space-y-2 bg-slate-50/50">
+            <!-- 底部角色切換器與登入帳號 -->
+            <div class="hidden lg:block p-4 border-t border-[var(--border)] space-y-2.5 bg-slate-50/50">
               <div class="text-[11px] font-medium text-slate-500">檢視身分模擬 (RBAC)</div>
               <select
                 onchange="App.storeSettings.activeRole=this.value;App.toast='已切換檢視身分：'+this.options[this.selectedIndex].text;render()"
@@ -1522,6 +1743,13 @@
               >
                 ${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${st.activeRole===r.code?'selected':''}>${r.name}</option>`).join('')}
               </select>
+              <div class="pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 text-[11px]">
+                <button onclick="App.mainTab='BILLING';render()" class="min-w-0 text-left cursor-pointer group">
+                  <div class="font-bold text-slate-800 group-hover:text-[#0F766E] truncate">${App.auth.email}</div>
+                  <div class="text-[10px] text-[#0F766E] font-semibold mono-num">${App.billing.planCode} · ${App.billing.storeCount} 店訂閱中</div>
+                </button>
+                <button onclick="logoutToAuthScreen()" class="shrink-0 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 text-slate-600 font-semibold cursor-pointer">登出</button>
+              </div>
             </div>
           </aside>
 
@@ -1567,6 +1795,7 @@
               ${App.mainTab === 'LIFF_LEAVE' ? renderLiffLeaveModule() : ''}
               ${App.mainTab === 'ATTENDANCE' ? renderAttendanceModule() : ''}
               ${App.mainTab === 'SETTINGS' ? renderStoreSettingsModule() : ''}
+              ${App.mainTab === 'BILLING' ? renderBillingModule() : ''}
             </main>
           </div>
         </div>
@@ -2917,6 +3146,449 @@
     }
 
     // ============================================================================
+    // 模組 7：SaaS 餐飲業者帳號登入頁 & 訂閱月費／金流收費管理
+    // ============================================================================
+    function renderAuthScreen() {
+      const a = App.auth;
+      const isReg = a.authMode === 'REGISTER';
+      return `
+        <div class="min-h-screen bg-[#F8FAFC] flex flex-col lg:flex-row">
+          <!-- 左側品牌價值主張 -->
+          <div class="lg:w-[46%] bg-gradient-to-br from-[#0F766E] via-[#115E59] to-slate-900 text-white p-8 sm:p-12 flex flex-col justify-between">
+            <div class="space-y-8">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-9 h-9 rounded-xl bg-white text-[#0F766E] font-bold text-base flex items-center justify-center shadow-sm">班</div>
+                  <div class="leading-tight">
+                    <div class="text-base font-bold tracking-tight">班匠 ShiftCraft AI</div>
+                    <div class="text-[11px] text-teal-200">專為台灣餐飲業打造的營運 SaaS</div>
+                  </div>
+                </div>
+                <div data-no-i18n="1" class="inline-flex items-center rounded-lg bg-white/10 p-0.5 text-[11px] font-semibold">
+                  <button onclick="setAppLang('zh-TW')" class="px-2 py-1 rounded-md cursor-pointer ${App.lang==='zh-TW'?'bg-white text-[#0F766E]':'text-white/80 hover:text-white'}">繁體中文</button>
+                  <button onclick="setAppLang('en')" class="px-2 py-1 rounded-md cursor-pointer ${App.lang==='en'?'bg-white text-[#0F766E]':'text-white/80 hover:text-white'}">English</button>
+                  <button onclick="setAppLang('ja')" class="px-2 py-1 rounded-md cursor-pointer ${App.lang==='ja'?'bg-white text-[#0F766E]':'text-white/80 hover:text-white'}">日本語</button>
+                </div>
+              </div>
+
+              <div class="space-y-3 pt-4">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 text-teal-100 text-xs font-semibold">月費 NT$1,290 起 · 支援綠界 / 藍新 / Stripe 定期定額</span>
+                <h2 class="text-2xl sm:text-3xl font-bold leading-snug">排班、打卡、LINE 簽核到銀行薪轉，一站式餐飲門市管理</h2>
+                <p class="text-sm text-teal-100/90 leading-relaxed">免導入硬體、手機開通即用。內建 2026 台灣勞基法合規檢查、外籍生工時提醒與店長休假副店代理簽核。</p>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div class="rounded-xl bg-white/10 border border-white/15 p-3.5 space-y-1">
+                  <div class="font-bold text-white">AI 智慧排班</div>
+                  <div class="text-teal-100/80 text-[11px]">一鍵排除輪班間隔與連七違規</div>
+                </div>
+                <div class="rounded-xl bg-white/10 border border-white/15 p-3.5 space-y-1">
+                  <div class="font-bold text-white">LINE 簽核代理</div>
+                  <div class="text-teal-100/80 text-[11px]">店長休假自動轉當日值班副店長</div>
+                </div>
+                <div class="rounded-xl bg-white/10 border border-white/15 p-3.5 space-y-1">
+                  <div class="font-bold text-white">一鍵銀行薪轉</div>
+                  <div class="text-teal-100/80 text-[11px]">中信/國泰/玉山/台新 CSV 直接上傳</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="pt-8 mt-8 border-t border-white/15 flex flex-wrap items-center justify-between gap-2 text-[11px] text-teal-100/80">
+              <span>已服務 320+ 台灣手搖飲、早午餐與連鎖餐飲門市</span>
+              <span class="mono-num">SSL 256-bit · PCI-DSS 金流加密</span>
+            </div>
+          </div>
+
+          <!-- 右側登入 / 註冊表單 -->
+          <div class="flex-1 flex items-center justify-center p-6 sm:p-10">
+            <div class="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm p-6 sm:p-8 space-y-5 text-xs">
+              <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl font-bold text-xs">
+                <button onclick="App.auth.authMode='LOGIN';render()" class="py-2 rounded-lg cursor-pointer transition ${!isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">業者帳號登入</button>
+                <button onclick="App.auth.authMode='REGISTER';render()" class="py-2 rounded-lg cursor-pointer transition ${isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">免費試用 14 天</button>
+              </div>
+
+              <div>
+                <h1 class="text-lg font-bold text-slate-900">${isReg ? '建立餐飲品牌 SaaS 帳號' : '登入班匠營運管理後台'}</h1>
+                <p class="text-slate-500 mt-0.5">${isReg ? '免先扣款，14 天內隨時可於後台綁定金流切換月費方案' : '請輸入品牌負責人或店長帳號密碼'}</p>
+              </div>
+
+              <form onsubmit="submitAuthForm(event)" class="space-y-3.5">
+                ${isReg ? `
+                  <div class="grid grid-cols-3 gap-2.5">
+                    <div class="col-span-2">
+                      <label class="block font-semibold text-slate-700 mb-1">餐飲品牌 / 公司名稱 *</label>
+                      <input value="${a.loginDraft.companyName||''}" oninput="App.auth.loginDraft.companyName=this.value" placeholder="例：森茶餐飲有限公司" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    </div>
+                    <div>
+                      <label class="block font-semibold text-slate-700 mb-1">門市數</label>
+                      <input type="number" min="1" max="50" value="${a.loginDraft.storeCount||1}" oninput="App.auth.loginDraft.storeCount=Number(this.value)||1" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-bold" />
+                    </div>
+                  </div>
+                ` : ''}
+                <div>
+                  <label class="block font-semibold text-slate-700 mb-1">企業 Email 帳號 *</label>
+                  <input type="email" value="${a.loginDraft.email||''}" oninput="App.auth.loginDraft.email=this.value" placeholder="boss@your-brand.tw" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="font-semibold text-slate-700">密碼 *</label>
+                    ${!isReg ? `<button type="button" onclick="App.toast='已寄送密碼重設連結至 '+App.auth.loginDraft.email;render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
+                  </div>
+                  <input type="password" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value" placeholder="請輸入至少 6 碼密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                </div>
+
+                <button type="submit" class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold text-xs cursor-pointer shadow-xs">
+                  ${isReg ? '立即開通 14 天免費試用' : '登入營運管理後台'}
+                </button>
+              </form>
+
+              <div class="relative py-1">
+                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200"></div></div>
+                <div class="relative flex justify-center"><span class="bg-white px-2.5 text-[11px] text-slate-400">或使用第三方快速登入</span></div>
+              </div>
+
+              <button type="button" onclick="loginWithLine()" class="w-full h-10 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer">
+                ${ICONS.smartphone} 使用 LINE 企業帳號一鍵登入
+              </button>
+
+              <div class="rounded-lg bg-slate-50 border border-slate-200/80 p-3 text-[11px] text-slate-600 flex items-center justify-between">
+                <span>體驗帳號：<strong class="mono-num text-slate-800">boss@shanbei-tea.tw</strong></span>
+                <button type="button" onclick="App.auth.loginDraft.email='boss@shanbei-tea.tw';App.auth.loggedIn=true;App.toast='已一鍵進入體驗後台。';render()" class="text-[#0F766E] font-bold hover:underline cursor-pointer">一鍵進入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        ${App.toast ? `
+          <div id="app-toast" class="no-print fixed bottom-5 right-5 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg text-xs font-medium flex items-center gap-3 border border-slate-700">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+            <span class="flex-1 leading-relaxed">${App.toast}</span>
+            <button onclick="App.toast=null;render()" class="text-slate-400 hover:text-white cursor-pointer font-bold">✕</button>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    function renderBillingModule() {
+      const a = App.auth;
+      const b = App.billing;
+      const calc = getPlanMonthlyTotal();
+      const activeGw = PAYMENT_GATEWAYS.find(g => g.code === b.gateway) || PAYMENT_GATEWAYS[0];
+      const activeGwCfg = b.gatewayConfig[b.gateway];
+      const defaultCard = b.cards.find(c => c.isDefault) || b.cards[0];
+
+      return `
+        <div class="space-y-4">
+          <!-- 頂部訂閱總覽橫幅 -->
+          <div class="bg-white border border-[var(--border)] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center gap-3.5">
+              <div class="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 text-[#0F766E] flex items-center justify-center font-bold text-base">${ICONS.creditCard}</div>
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-sm font-bold text-slate-900">${a.companyName}</span>
+                  <span class="px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[#0F766E] text-[11px] font-bold">${calc.plan.name}</span>
+                  <span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-semibold">定期定額啟用中</span>
+                </div>
+                <div class="text-xs text-slate-500 mt-0.5 mono-num">
+                  登入帳號：${a.email} · 訂閱 ${calc.stores} 店 · 下次自動扣款：${b.nextChargeDate}（NT$${calc.monthlyTotal.toLocaleString()} / 月）
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
+              <button onclick="App.billing.subTab='PLANS';render()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">變更方案 / 門市數</button>
+              <button onclick="logoutToAuthScreen()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">登出 / 預覽登入頁</button>
+            </div>
+          </div>
+
+          <!-- 子頁籤導覽 -->
+          <div class="flex flex-wrap gap-1 bg-white border border-[var(--border)] p-1 rounded-xl w-fit text-xs font-semibold">
+            ${[
+              { k: 'ACCOUNT', l: '帳號與登入安全' },
+              { k: 'PLANS', l: '月費方案與計價' },
+              { k: 'PAYMENT', l: '金流串接與付款方式' },
+              { k: 'INVOICES', l: `帳單與發票 (${b.invoices.length})` },
+            ].map(t => `
+              <button onclick="App.billing.subTab='${t.k}';render()" class="px-3.5 py-1.5 rounded-lg cursor-pointer transition ${b.subTab===t.k?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${t.l}</button>
+            `).join('')}
+          </div>
+
+          <!-- 子分頁 1：帳號與登入安全 -->
+          ${b.subTab === 'ACCOUNT' ? `
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+              <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 class="text-sm font-bold text-slate-900">品牌管理帳號資料</h3>
+                    <p class="text-[11px] text-slate-500 mt-0.5">上次登入：${a.lastLoginAt}</p>
+                  </div>
+                  <span class="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[11px]">帳號驗證通過</span>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div><label class="block font-semibold text-slate-600 mb-1">餐飲品牌 / 公司名稱</label><input value="${a.companyName}" oninput="App.auth.companyName=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 font-semibold" /></div>
+                  <div><label class="block font-semibold text-slate-600 mb-1">負責人姓名</label><input value="${a.ownerName}" oninput="App.auth.ownerName=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 font-semibold" /></div>
+                  <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">登入 Email 帳號</label><input value="${a.email}" oninput="App.auth.email=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                </div>
+                <div class="space-y-2 pt-2 border-t border-slate-100">
+                  <label class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200/70 cursor-pointer">
+                    <div><div class="font-bold text-slate-800">雙重驗證 (2FA 簡訊 / Authenticator)</div><div class="text-[11px] text-slate-500">登入或變更薪轉／金流設定時需二次驗證</div></div>
+                    <input type="checkbox" ${a.twoFactorEnabled?'checked':''} onchange="App.auth.twoFactorEnabled=this.checked;App.toast=this.checked?'已啟用雙重驗證 (2FA)。':'已關閉雙重驗證。';render()" />
+                  </label>
+                  <label class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200/70 cursor-pointer">
+                    <div><div class="font-bold text-slate-800">LINE 企業帳號快速登入 (LINE SSO)</div><div class="text-[11px] text-slate-500">允許已綁定管理員透過 LINE 一鍵登入後台與簽核</div></div>
+                    <input type="checkbox" ${a.lineAdminBound?'checked':''} onchange="App.auth.lineAdminBound=this.checked;App.toast='已更新 LINE SSO 登入設定。';render()" />
+                  </label>
+                </div>
+                <div class="flex justify-end">
+                  <button onclick="App.toast='已儲存品牌帳號資料。';render()" class="h-8 px-4 rounded-lg bg-[#0F766E] text-white font-bold cursor-pointer">儲存帳號資料</button>
+                </div>
+              </section>
+
+              <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
+                <h3 class="text-sm font-bold text-slate-900 border-b border-slate-100 pb-3">變更登入密碼</h3>
+                <form onsubmit="updateAccountPassword(event)" class="space-y-3">
+                  <div><label class="block font-semibold text-slate-600 mb-1">目前密碼</label><input type="password" value="${a.pwdDraft.current}" oninput="App.auth.pwdDraft.current=this.value" placeholder="••••••••" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div><label class="block font-semibold text-slate-600 mb-1">新密碼（至少 6 碼）</label><input type="password" value="${a.pwdDraft.next}" oninput="App.auth.pwdDraft.next=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">確認新密碼</label><input type="password" value="${a.pwdDraft.confirm}" oninput="App.auth.pwdDraft.confirm=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
+                  </div>
+                  <button type="submit" class="h-8 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer">更新登入密碼</button>
+                </form>
+
+                <div class="pt-3 border-t border-slate-100 space-y-2">
+                  <div class="font-bold text-slate-900">目前已登入裝置 (${a.sessions.length})</div>
+                  ${a.sessions.map(s => `
+                    <div class="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-slate-100 bg-slate-50/60">
+                      <div class="min-w-0">
+                        <div class="font-bold text-slate-800">${s.device} ${s.current ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px]">本機</span>' : ''}</div>
+                        <div class="text-[11px] text-slate-500">${s.location} · ${s.lastActive}</div>
+                      </div>
+                      ${!s.current ? `<button onclick="revokeSession('${s.id}')" class="px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-rose-50 hover:text-rose-700 text-slate-600 font-semibold cursor-pointer">強制登出</button>` : ''}
+                    </div>
+                  `).join('')}
+                </div>
+              </section>
+            </div>
+          ` : ''}
+
+          <!-- 子分頁 2：月費方案與計價 -->
+          ${b.subTab === 'PLANS' ? `
+            <div class="space-y-4 text-xs">
+              <div class="bg-white border border-[var(--border)] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center gap-3 flex-wrap">
+                  <div class="inline-flex items-center rounded-lg bg-slate-100 p-1 font-bold">
+                    <button onclick="App.billing.billingCycle='MONTHLY';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${b.billingCycle==='MONTHLY'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">按月扣款 (月繳)</button>
+                    <button onclick="App.billing.billingCycle='YEARLY';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${b.billingCycle==='YEARLY'?'bg-white text-[#0F766E] shadow-xs':'text-slate-500'}">年繳優惠 (省 20%)</button>
+                  </div>
+                  <label class="flex items-center gap-2 font-semibold text-slate-700">
+                    訂閱門市數量：
+                    <input type="number" min="1" max="50" value="${b.storeCount}" oninput="App.billing.storeCount=Math.max(1,Number(this.value)||1);render()" class="w-16 h-8 px-2 rounded-lg border border-slate-200 mono-num font-bold text-center" />
+                    <span>家門市</span>
+                  </label>
+                </div>
+                <div class="text-right">
+                  <div class="text-[11px] text-slate-500">目前試算費用（${calc.stores} 店 · ${b.billingCycle==='YEARLY'?'年繳折算月費':'按月收費'}）</div>
+                  <div class="text-lg font-bold mono-num text-[#0F766E]">NT$${calc.monthlyTotal.toLocaleString()} <span class="text-xs font-medium text-slate-500">/ 月</span></div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                ${SAAS_PLANS.map(p => {
+                  const isCur = b.planCode === p.code;
+                  const unit = b.billingCycle === 'YEARLY' ? Math.round(p.monthlyPrice * 0.8) : p.monthlyPrice;
+                  return `
+                    <div class="bg-white rounded-2xl p-5 flex flex-col justify-between space-y-4 border-2 ${isCur ? 'border-[#0F766E] shadow-sm' : 'border-slate-200'}">
+                      <div class="space-y-3">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-sm font-bold text-slate-900">${p.name}</span>
+                          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${isCur ? 'bg-[#0F766E] text-white' : 'bg-teal-50 text-[#0F766E]'}">${isCur ? '目前方案' : p.badge}</span>
+                        </div>
+                        <p class="text-[11px] text-slate-500">${p.desc}</p>
+                        <div class="pt-1">
+                          <div class="flex items-baseline gap-1">
+                            <span class="text-2xl font-bold mono-num text-slate-900">NT$${unit.toLocaleString()}</span>
+                            <span class="text-slate-500">/ 店 / 月</span>
+                          </div>
+                          <div class="text-[11px] text-[#0F766E] font-semibold mt-0.5">${p.maxStaff} · ${b.storeCount} 店合計 NT$${(unit * b.storeCount).toLocaleString()}/月</div>
+                        </div>
+                        <ul class="space-y-2 pt-2 border-t border-slate-100">
+                          ${p.features.map(ft => `<li class="flex items-start gap-2 text-slate-700"><span class="text-[#0F766E] mt-0.5">${ICONS.check}</span><span>${ft}</span></li>`).join('')}
+                        </ul>
+                      </div>
+                      <button onclick="openPlanCheckout('${p.code}')" class="w-full h-9 rounded-lg font-bold cursor-pointer ${isCur ? 'border border-[#0F766E] text-[#0F766E] bg-teal-50/50 hover:bg-teal-50' : 'bg-[#0F766E] hover:bg-[#115E59] text-white'}">
+                        ${isCur ? '續約 / 調整門市數結帳' : '選擇此方案並前往金流結帳'}
+                      </button>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- 子分頁 3：金流串接與付款方式 -->
+          ${b.subTab === 'PAYMENT' ? `
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+              <!-- 左：金流服務商設定 -->
+              <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
+                <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 class="text-sm font-bold text-slate-900">SaaS 定期定額金流串接</h3>
+                    <p class="text-[11px] text-slate-500 mt-0.5">選擇收款金流並設定商店代號與 Webhook 回呼</p>
+                  </div>
+                  <div class="inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-bold">
+                    <button onclick="App.billing.gatewayMode='SANDBOX';render()" class="px-2.5 py-1 rounded-md cursor-pointer ${b.gatewayMode==='SANDBOX'?'bg-white text-amber-700 shadow-xs':'text-slate-500'}">沙盒測試</button>
+                    <button onclick="App.billing.gatewayMode='LIVE';render()" class="px-2.5 py-1 rounded-md cursor-pointer ${b.gatewayMode==='LIVE'?'bg-white text-emerald-700 shadow-xs':'text-slate-500'}">正式收款</button>
+                  </div>
+                </div>
+
+                <div class="space-y-2">
+                  ${PAYMENT_GATEWAYS.map(gw => {
+                    const selected = b.gateway === gw.code;
+                    const cfg = b.gatewayConfig[gw.code];
+                    return `
+                      <div onclick="App.billing.gateway='${gw.code}';render()" class="p-3 rounded-xl border cursor-pointer transition ${selected ? 'border-[#0F766E] bg-teal-50/40' : 'border-slate-200 hover:bg-slate-50'}">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="font-bold text-slate-900">${gw.name}</span>
+                          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${cfg.connected ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}">${cfg.connected ? '已連線' : '未驗證'}</span>
+                        </div>
+                        <div class="text-[11px] text-slate-600 mt-1">${gw.desc}</div>
+                        <div class="text-[10px] text-slate-400 mt-1 mono-num">${gw.fee}</div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+
+                <div class="space-y-2.5 pt-2 border-t border-slate-100">
+                  <div class="font-bold text-slate-800">${activeGw.name} API 金鑰參數</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div><label class="block font-semibold text-slate-600 mb-1">特店編號 / MerchantID</label><input value="${activeGwCfg.merchantId}" oninput="App.billing.gatewayConfig[App.billing.gateway].merchantId=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">HashKey / Publishable Key</label><input type="password" value="${activeGwCfg.hashKey}" oninput="App.billing.gatewayConfig[App.billing.gateway].hashKey=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">定期定額 Webhook 回呼網址</label><input value="${activeGwCfg.webhookUrl}" oninput="App.billing.gatewayConfig[App.billing.gateway].webhookUrl=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 mono-num text-[11px]" /></div>
+                  </div>
+                  <div class="flex items-center justify-between pt-1">
+                    <label class="flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer">
+                      <input type="checkbox" ${b.autoRenew?'checked':''} onchange="App.billing.autoRenew=this.checked;render()" />
+                      每月 1 日自動定期定額扣款續約
+                    </label>
+                    <button onclick="testPaymentGateway('${b.gateway}')" class="h-8 px-3.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">測試金流連線</button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- 右：綁定信用卡與三聯式電子發票 -->
+              <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
+                <h3 class="text-sm font-bold text-slate-900 border-b border-slate-100 pb-3">綁定扣款信用卡（Token 加密保存）</h3>
+                <div class="space-y-2">
+                  ${b.cards.map(c => `
+                    <div class="p-3 rounded-xl border ${c.isDefault ? 'border-[#0F766E] bg-teal-50/30' : 'border-slate-200'} flex items-center justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-slate-900 mono-num">${c.brand} •••• •••• •••• ${c.last4}</div>
+                        <div class="text-[11px] text-slate-500 mono-num">到期 ${c.exp} · ${c.holder}</div>
+                      </div>
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${c.isDefault ? 'bg-[#0F766E] text-white' : 'bg-slate-100 text-slate-600'}">${c.isDefault ? '預設扣款卡' : '備用卡'}</span>
+                    </div>
+                  `).join('')}
+                </div>
+
+                <form onsubmit="addPaymentCard(event)" class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5">
+                  <div class="font-bold text-slate-800">新增 / 更換定期定額信用卡</div>
+                  <input value="${b.cardDraft.number}" oninput="App.billing.cardDraft.number=this.value" placeholder="信用卡卡號（例：4242 4242 4242 4242）" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num" />
+                  <div class="grid grid-cols-3 gap-2">
+                    <input value="${b.cardDraft.exp}" oninput="App.billing.cardDraft.exp=this.value" placeholder="MM/YY" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num" />
+                    <input value="${b.cardDraft.cvc}" oninput="App.billing.cardDraft.cvc=this.value" placeholder="CVC" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num" />
+                    <input value="${b.cardDraft.holder}" oninput="App.billing.cardDraft.holder=this.value" placeholder="持卡人英文姓名" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
+                  </div>
+                  <button type="submit" class="h-8 px-3.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer">安全綁定信用卡</button>
+                </form>
+
+                <div class="pt-3 border-t border-slate-100 space-y-2.5">
+                  <div class="font-bold text-slate-900">B2B 三聯式電子發票開立設定</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div><label class="block font-semibold text-slate-600 mb-1">發票抬頭</label><input value="${b.invoiceInfo.title}" oninput="App.billing.invoiceInfo.title=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 font-semibold" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">統一編號</label><input value="${b.invoiceInfo.ubn}" oninput="App.billing.invoiceInfo.ubn=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                    <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">電子發票寄送 Email</label><input value="${b.invoiceInfo.email}" oninput="App.billing.invoiceInfo.email=this.value" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          ` : ''}
+
+          <!-- 子分頁 4：帳單與發票紀錄 -->
+          ${b.subTab === 'INVOICES' ? `
+            <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden text-xs">
+              <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 class="text-sm font-bold text-slate-900">每月訂閱扣款與電子發票紀錄</h3>
+                  <p class="text-[11px] text-slate-500">每次定期定額授權成功後，自動透過金流開立三聯式電子發票</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button onclick="simulateMonthlyCharge()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">模擬本月定期定額扣款</button>
+                  <button onclick="exportInvoicesCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出帳單 CSV</button>
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse text-left min-w-[720px]">
+                  <thead>
+                    <tr class="bg-slate-50 border-b border-[var(--border)] text-slate-500">
+                      <th class="p-3">帳單編號</th>
+                      <th class="p-3">扣款日期</th>
+                      <th class="p-3">計費期間</th>
+                      <th class="p-3">訂閱方案</th>
+                      <th class="p-3">金流管道</th>
+                      <th class="p-3">電子發票字軌</th>
+                      <th class="p-3 text-right">扣款金額</th>
+                      <th class="p-3 text-right">狀態</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${b.invoices.map(inv => `
+                      <tr class="border-b border-slate-100 last:border-b-0">
+                        <td class="p-3 mono-num font-bold text-slate-900">${inv.id}</td>
+                        <td class="p-3 mono-num text-slate-600">${inv.date}</td>
+                        <td class="p-3 mono-num text-slate-600">${inv.period}</td>
+                        <td class="p-3 font-semibold text-slate-800">${inv.plan} <span class="text-slate-400">(${inv.stores} 店)</span></td>
+                        <td class="p-3 text-slate-600">${inv.gateway}</td>
+                        <td class="p-3 mono-num font-semibold text-[#0F766E]">${inv.eInvoiceNo}</td>
+                        <td class="p-3 mono-num text-right font-bold text-slate-900">NT$${inv.amount.toLocaleString()}</td>
+                        <td class="p-3 text-right"><span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px]">已付款</span></td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- 金流授權結帳彈窗 -->
+          ${b.checkoutModal ? (() => {
+            const c = getPlanMonthlyTotal(b.checkoutModal.planCode, b.storeCount, b.billingCycle);
+            return `
+              <div class="fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4" onclick="App.billing.checkoutModal=null;render()">
+                <div class="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl text-xs" onclick="event.stopPropagation()">
+                  <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h3 class="text-sm font-bold text-slate-900">確認訂閱方案與金流定期定額授權</h3>
+                    <button onclick="App.billing.checkoutModal=null;render()" class="text-slate-400 hover:text-slate-700 font-bold cursor-pointer">✕</button>
+                  </div>
+                  <div class="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1.5">
+                    <div class="flex justify-between"><span class="text-slate-500">訂閱方案</span><span class="font-bold text-slate-900">${c.plan.name}</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">門市數量</span><span class="font-bold mono-num">${c.stores} 家門市</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">計費週期</span><span class="font-bold">${b.billingCycle === 'YEARLY' ? '年繳（8 折優惠）' : '按月定期定額'}</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">扣款金流</span><span class="font-bold text-[#0F766E]">${activeGw.name}</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">付款卡片</span><span class="mono-num font-bold">${defaultCard ? `${defaultCard.brand} •••• ${defaultCard.last4}` : '未綁定'}</span></div>
+                    <div class="flex justify-between pt-2 border-t border-slate-200 text-sm"><span class="font-bold text-slate-900">本次授權金額</span><span class="font-bold mono-num text-[#0F766E]">NT$${c.chargeNow.toLocaleString()}</span></div>
+                  </div>
+                  <div class="text-[11px] text-slate-500">按下確認後將透過 ${activeGw.name} 進行 PCI-DSS 加密刷卡授權，並自動開立三聯式電子發票至 ${b.invoiceInfo.email}。</div>
+                  <div class="flex justify-end gap-2">
+                    <button onclick="App.billing.checkoutModal=null;render()" class="h-9 px-4 rounded-lg border border-slate-200 font-semibold cursor-pointer">取消</button>
+                    <button onclick="confirmPlanCheckout()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">確認刷卡並啟用方案</button>
+                  </div>
+                </div>
+              </div>
+            `;
+          })() : ''}
+        </div>
+      `;
+    }
+
+    // ============================================================================
     // 6. 右側滑出式 LINE LIFF 員工模擬抽屜 (不佔用日常管理介面)
     // ============================================================================
     function renderLineManagerApprovalContent() {
@@ -4120,9 +4792,104 @@
       '當日值班領班代理': { en: 'On-Duty Floor Lead Proxy', ja: '当番リーダー代理' },
       '副店長代理': { en: 'Shift Lead Proxy', ja: '副店長代理' },
       '老闆代行': { en: 'Owner Proxy', ja: 'オーナー代行' },
+      '帳號與訂閱': { en: 'Account & Billing', ja: 'アカウント・契約' },
+      '登出': { en: 'Log Out', ja: 'ログアウト' },
+      '登出 / 預覽登入頁': { en: 'Log Out / Login Page', ja: 'ログアウト / ログイン画面' },
+      '變更方案 / 門市數': { en: 'Change Plan / Stores', ja: 'プラン・店舗数変更' },
+      '帳號與登入安全': { en: 'Account & Security', ja: 'アカウント・セキュリティ' },
+      '月費方案與計價': { en: 'Monthly Plans', ja: '月額プラン・料金' },
+      '金流串接與付款方式': { en: 'Payment Gateways', ja: '決済連携・支払方法' },
+      '定期定額啟用中': { en: 'Auto-Billing Active', ja: '定期課金有効' },
+      '品牌管理帳號資料': { en: 'Brand Account Profile', ja: 'ブランド管理者アカウント' },
+      '帳號驗證通過': { en: 'Verified', ja: '認証済' },
+      '餐飲品牌 / 公司名稱': { en: 'Brand / Company Name', ja: '飲食ブランド / 会社名' },
+      '餐飲品牌 / 公司名稱 *': { en: 'Brand / Company Name *', ja: '飲食ブランド / 会社名 *' },
+      '負責人姓名': { en: 'Owner Name', ja: '代表者氏名' },
+      '登入 Email 帳號': { en: 'Login Email', ja: 'ログインEmail' },
+      '企業 Email 帳號 *': { en: 'Work Email *', ja: '法人Email *' },
+      '密碼 *': { en: 'Password *', ja: 'パスワード *' },
+      '忘記密碼？': { en: 'Forgot password?', ja: 'パスワードをお忘れですか？' },
+      '雙重驗證 (2FA 簡訊 / Authenticator)': { en: 'Two-Factor Auth (2FA SMS / App)', ja: '二要素認証 (2FA SMS / アプリ)' },
+      '登入或變更薪轉／金流設定時需二次驗證': { en: 'Require 2FA on login or payroll/payment changes', ja: 'ログインや振込・決済設定変更時に二段階認証を要求' },
+      'LINE 企業帳號快速登入 (LINE SSO)': { en: 'LINE Business SSO Login', ja: 'LINE法人アカウントSSOログイン' },
+      '允許已綁定管理員透過 LINE 一鍵登入後台與簽核': { en: 'Allow bound admins to sign in & approve via LINE', ja: '連携済管理者のLINEワンクリックログイン・承認を許可' },
+      '儲存帳號資料': { en: 'Save Account', ja: 'アカウント保存' },
+      '變更登入密碼': { en: 'Change Password', ja: 'パスワード変更' },
+      '目前密碼': { en: 'Current Password', ja: '現在のパスワード' },
+      '新密碼（至少 6 碼）': { en: 'New Password (min 6 chars)', ja: '新パスワード（6文字以上）' },
+      '確認新密碼': { en: 'Confirm Password', ja: '新パスワード確認' },
+      '更新登入密碼': { en: 'Update Password', ja: 'パスワード更新' },
+      '本機': { en: 'This Device', ja: 'この端末' },
+      '強制登出': { en: 'Revoke', ja: '強制ログアウト' },
+      '按月扣款 (月繳)': { en: 'Monthly Billing', ja: '月額払い' },
+      '年繳優惠 (省 20%)': { en: 'Annual (Save 20%)', ja: '年額払い (20% OFF)' },
+      '訂閱門市數量：': { en: 'Subscribed Stores:', ja: '契約店舗数：' },
+      '家門市': { en: 'stores', ja: '店舗' },
+      '目前方案': { en: 'Current Plan', ja: '現在のプラン' },
+      '單店首選': { en: 'Best for Single Store', ja: '単店向け' },
+      '最受歡迎': { en: 'Most Popular', ja: '人気No.1' },
+      '總部必備': { en: 'Enterprise HQ', ja: '本部向け' },
+      '輕量單店版 Starter': { en: 'Starter Plan', ja: 'スタータープラン' },
+      '成長連鎖版 Pro': { en: 'Pro Growth Plan', ja: 'プロ成長プラン' },
+      '企業旗艦版 Enterprise': { en: 'Enterprise Plan', ja: 'エンタープライズプラン' },
+      '/ 店 / 月': { en: '/ store / mo', ja: '/ 店舗 / 月' },
+      '續約 / 調整門市數結帳': { en: 'Renew / Adjust Stores', ja: '更新・店舗数変更決済' },
+      '選擇此方案並前往金流結帳': { en: 'Select Plan & Checkout', ja: 'このプランで決済へ進む' },
+      'SaaS 定期定額金流串接': { en: 'Recurring Payment Gateways', ja: 'SaaS定期課金決済連携' },
+      '選擇收款金流並設定商店代號與 Webhook 回呼': { en: 'Select payment gateway, merchant credentials & webhooks', ja: '決済代行サービス・加盟店ID・Webhookを設定' },
+      '沙盒測試': { en: 'Sandbox', ja: 'テスト環境' },
+      '正式收款': { en: 'Live Mode', ja: '本番決済' },
+      '已連線': { en: 'Connected', ja: '接続済' },
+      '未驗證': { en: 'Not Verified', ja: '未認証' },
+      '綠界科技 ECPay': { en: 'ECPay (Taiwan)', ja: 'ECPay (緑界科技)' },
+      '藍新金流 NewebPay': { en: 'NewebPay (Taiwan)', ja: 'NewebPay (藍新金流)' },
+      '特店編號 / MerchantID': { en: 'Merchant ID', ja: '加盟店ID / MerchantID' },
+      '定期定額 Webhook 回呼網址': { en: 'Recurring Billing Webhook URL', ja: '定期課金Webhook URL' },
+      '每月 1 日自動定期定額扣款續約': { en: 'Auto-charge recurring monthly fee on the 1st', ja: '毎月1日に定期課金で自動更新' },
+      '測試金流連線': { en: 'Test Gateway', ja: '決済接続テスト' },
+      '綁定扣款信用卡（Token 加密保存）': { en: 'Saved Payment Cards (Tokenized)', ja: '登録クレジットカード（トークン暗号化）' },
+      '預設扣款卡': { en: 'Default Card', ja: 'デフォルト' },
+      '備用卡': { en: 'Backup', ja: '予備カード' },
+      '新增 / 更換定期定額信用卡': { en: 'Add / Replace Credit Card', ja: 'クレジットカード追加・変更' },
+      '安全綁定信用卡': { en: 'Save Card Securely', ja: 'カードを安全に登録' },
+      'B2B 三聯式電子發票開立設定': { en: 'B2B e-Invoice Settings', ja: 'B2B電子請求書・インボイス設定' },
+      '發票抬頭': { en: 'Company Title', ja: '宛名・会社名' },
+      '電子發票寄送 Email': { en: 'Invoice Email', ja: '請求書送付Email' },
+      '每月訂閱扣款與電子發票紀錄': { en: 'Monthly Billing & e-Invoice History', ja: '月額課金・請求書履歴' },
+      '模擬本月定期定額扣款': { en: 'Simulate Monthly Charge', ja: '今月分定期課金をテスト' },
+      '匯出帳單 CSV': { en: 'Export Invoices CSV', ja: '請求書CSV出力' },
+      '帳單編號': { en: 'Invoice ID', ja: '請求番号' },
+      '扣款日期': { en: 'Date', ja: '決済日' },
+      '計費期間': { en: 'Billing Period', ja: '課金期間' },
+      '訂閱方案': { en: 'Plan', ja: '契約プラン' },
+      '金流管道': { en: 'Gateway', ja: '決済手段' },
+      '電子發票字軌': { en: 'e-Invoice No.', ja: '電子発票番号' },
+      '扣款金額': { en: 'Amount', ja: '決済金額' },
+      '已付款': { en: 'Paid', ja: '支払済' },
+      '確認訂閱方案與金流定期定額授權': { en: 'Confirm Plan & Recurring Payment', ja: '契約プラン・定期決済の承認' },
+      '門市數量': { en: 'Stores', ja: '店舗数' },
+      '計費週期': { en: 'Billing Cycle', ja: '請求サイクル' },
+      '扣款金流': { en: 'Gateway', ja: '決済ゲートウェイ' },
+      '付款卡片': { en: 'Card', ja: '支払カード' },
+      '本次授權金額': { en: 'Charge Today', ja: '今回決済金額' },
+      '確認刷卡並啟用方案': { en: 'Authorize & Activate Plan', ja: '決済確定してプラン有効化' },
+      '業者帳號登入': { en: 'Operator Login', ja: '事業者ログイン' },
+      '免費試用 14 天': { en: '14-Day Free Trial', ja: '14日間無料トライアル' },
+      '登入班匠營運管理後台': { en: 'Sign in to ShiftCraft Ops', ja: 'ShiftCraft 管理画面へログイン' },
+      '建立餐飲品牌 SaaS 帳號': { en: 'Create Restaurant SaaS Account', ja: '飲食ブランドSaaSアカウント作成' },
+      '登入營運管理後台': { en: 'Sign In to Dashboard', ja: '管理画面へログイン' },
+      '立即開通 14 天免費試用': { en: 'Start 14-Day Free Trial', ja: '14日間無料トライアルを開始' },
+      '或使用第三方快速登入': { en: 'Or continue with', ja: 'または外部アカウントでログイン' },
+      '使用 LINE 企業帳號一鍵登入': { en: 'Sign in with LINE Business', ja: 'LINE法人アカウントでログイン' },
+      '一鍵進入': { en: 'Quick Demo', ja: 'ワンクリック体験' },
     };
 
     const I18N_PATTERNS = [
+      [/^帳單與發票 \((\d+)\)$/, { en: 'Invoices ($1)', ja: '請求書・履歴 ($1)' }],
+      [/^目前已登入裝置 \((\d+)\)$/, { en: 'Active Sessions ($1)', ja: 'ログイン中の端末 ($1)' }],
+      [/^(\w+) · (\d+) 店訂閱中$/, { en: '$1 · $2 stores active', ja: '$1・$2店舗契約中' }],
+      [/^(\d+) 家門市$/, { en: '$1 stores', ja: '$1店舗' }],
+      [/^\((\d+) 店\)$/, { en: '($1 stores)', ja: '($1店舗)' }],
       [/^目前簽核人：(.+)$/, { en: 'Current Approver: $1', ja: '現在の承認者：$1' }],
       [/^簽核人：(.+)$/, { en: 'Approved by: $1', ja: '承認者：$1' }],
       [/^店長休假中（(.+?) 代理）$/, { en: 'Manager Off ($1 Proxy)', ja: '店長休暇中（$1 代理）' }],
