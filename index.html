@@ -332,7 +332,19 @@
       liffDrawerOpen: false, // 統一的右側 LINE LIFF 模擬抽屜（不佔據日常工作空間）
       liffRole: 'STAFF', // STAFF | MANAGER
       liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
-      lineLiff: { liffId: '2012747321-uH6zNzCm', ready: false, inClient: false, loggedIn: false, profile: null, error: null },
+      lineLiff: {
+        liffId: '2012747321-uH6zNzCm',
+        ready: false,
+        inClient: false,
+        loggedIn: false,
+        profile: null,
+        error: null,
+        bootLoading: (
+          /Line\/|LIFF/i.test(navigator.userAgent || '') ||
+          /(?:[?&])(liff\.state|liff=1|tab=)/i.test(window.location.search || '') ||
+          /liff\.line\.me|access\.line\.me/i.test(document.referrer || '')
+        ),
+      },
       multiStore: {
         brandId: 'brand-shiftcraft-demo',
         activeStoreId: 'store-01',
@@ -715,7 +727,21 @@
     }
 
     async function initRealLineLiff() {
-      if (typeof liff === 'undefined' || !App.lineLiff || !App.lineLiff.liffId) return;
+      const clearBootLoading = () => {
+        if (App.lineLiff && App.lineLiff.bootLoading) {
+          App.lineLiff.bootLoading = false;
+          render();
+        }
+      };
+      // 安全保險：若網路異常或 SDK 載入超時，最多 5 秒自動結束載入畫面
+      const safetyTimer = setTimeout(clearBootLoading, 5000);
+
+      if (typeof liff === 'undefined' || !App.lineLiff || !App.lineLiff.liffId) {
+        clearTimeout(safetyTimer);
+        clearBootLoading();
+        return;
+      }
+      let redirectingToLineLogin = false;
       try {
         await liff.init({ liffId: App.lineLiff.liffId });
         App.lineLiff.ready = true;
@@ -730,6 +756,7 @@
 
         if (App.lineLiff.inClient || forceLiffView) {
           if (!liff.isLoggedIn()) {
+            redirectingToLineLogin = true;
             liff.login({ redirectUri: window.location.href });
             return;
           }
@@ -741,17 +768,24 @@
           App.auth.loggedIn = true;
           App.auth.lastLoginAt = '剛剛 (LINE LIFF)';
           App.liffDrawerOpen = true;
+          App.lineLiff.bootLoading = false;
           render();
         } else if (App.lineLiff.loggedIn) {
           try {
             const prof = await liff.getProfile();
             App.lineLiff.profile = prof;
             syncBoundLineEmployee();
-            render();
           } catch (e) {}
+          App.lineLiff.bootLoading = false;
+          render();
         }
       } catch (err) {
         App.lineLiff.error = err && err.message ? err.message : String(err);
+      } finally {
+        clearTimeout(safetyTimer);
+        if (!redirectingToLineLogin) {
+          clearBootLoading();
+        }
       }
     }
 
@@ -2285,6 +2319,18 @@ end $$;`;
     // 5. 全域 App Shell 渲染引擎 (Sidebar + Topbar + Workspace + Slide-over)
     // ============================================================================
     function render() {
+      if (App.lineLiff && App.lineLiff.bootLoading) {
+        document.getElementById('app').innerHTML = `
+          <div class="min-h-screen bg-[#F4F5F7] flex flex-col items-center justify-center p-6 text-center">
+            <div class="w-16 h-16 rounded-2xl bg-[#06C755] text-white font-bold text-2xl flex items-center justify-center shadow-lg mb-5">班</div>
+            <div class="w-8 h-8 rounded-full border-4 border-emerald-200 border-t-[#06C755] animate-spin mb-4"></div>
+            <div class="text-base font-bold text-slate-900">正在載入班匠員工系統…</div>
+            <div class="text-xs text-slate-500 mt-1.5">正在安全連線 LINE 帳號與門市雲端資料</div>
+          </div>
+        `;
+        return;
+      }
+
       const pendingApprovals = App.liff.requests.filter(r => r.status === 'PENDING').length;
       const pendingMissed = App.attendance.corrections.filter(c => c.status === 'PENDING').length;
       const st = App.storeSettings;
