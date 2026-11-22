@@ -449,6 +449,7 @@
         subTab: 'BASIC', // 'BASIC' | 'GEO' | 'STATIONS' | 'RBAC'
         name: '山焙森茶・中山南西概念店', code: 'TW-TPE-001', taxId: '90482715',
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
+        scheduleStartHour: 8, scheduleEndHour: 23,
         laborInsuranceUnit: '01094827K', nhiInsuranceUnit: '010194827',
         weeklyClosedDays: [],
         specialClosedDates: [
@@ -796,6 +797,31 @@
       const hh = Math.floor(hours);
       const mm = Math.round((hours - hh) * 60);
       return mm > 0 ? `${hh}h ${mm}m` : `${hh}h`;
+    }
+
+    function getStoreScheduleAxis() {
+      const st = App.storeSettings || {};
+      const start = Number.isFinite(Number(st.scheduleStartHour)) ? Math.max(0, Math.min(23, Number(st.scheduleStartHour))) : 8;
+      const rawEnd = Number.isFinite(Number(st.scheduleEndHour)) ? Math.max(1, Math.min(24, Number(st.scheduleEndHour))) : 23;
+      const is24h = start === 0 && rawEnd === 24;
+      const end = is24h ? 24 : (rawEnd <= start ? rawEnd + 24 : rawEnd);
+      const span = Math.max(4, end - start);
+      const step = span > 14 ? 2 : 1;
+      const ticks = [];
+      for (let h = start; h < end; h += step) ticks.push(h);
+      const endLabel = end === 24 ? '24:00' : `${String(end % 24).padStart(2, '0')}:00${end > 24 ? ' (+1)' : ''}`;
+      const label = is24h
+        ? '00:00–24:00 (24小時)'
+        : `${String(start).padStart(2, '0')}:00–${endLabel}`;
+      return { start, end, rawEnd, span, step, ticks, endLabel, is24h, isOvernightWindow: end > 24, label };
+    }
+
+    function setStoreScheduleRange(startH, endH, silent) {
+      App.storeSettings.scheduleStartHour = Number(startH);
+      App.storeSettings.scheduleEndHour = Number(endH);
+      const ax = getStoreScheduleAxis();
+      if (!silent) App.toast = `已更新店鋪可排班時間為 ${ax.label}，排班時間軸已即時同步。`;
+      render();
     }
 
     function getShiftSegments(shift) {
@@ -1866,17 +1892,23 @@
       });
       const curDayStat = dayStats[selDate];
 
-      const AXIS_START = 0, AXIS_END = 24, AXIS_SPAN = 24;
-      const AXIS_TICKS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
-      // 深夜跨夜時段 (00:00-06:00, 22:00-24:00) 與餐期尖峰標記 (11:30-14:00, 17:30-20:30)
+      const axis = getStoreScheduleAxis();
+      const AXIS_START = axis.start, AXIS_END = axis.end, AXIS_SPAN = axis.span;
+      const AXIS_TICKS = axis.ticks;
+      const clipZone = (s, e, label) => {
+        const cs = Math.max(AXIS_START, s), ce = Math.min(AXIS_END, e);
+        if (ce <= cs) return null;
+        return { left: ((cs - AXIS_START) / AXIS_SPAN) * 100, width: ((ce - cs) / AXIS_SPAN) * 100, label };
+      };
+      // 深夜跨夜時段 (00:00-06:00, 22:00-30:00) 與餐期尖峰標記 (11:30-14:00, 17:30-20:30)
       const nightZones = [
-        { left: 0, width: (6 / AXIS_SPAN) * 100, label: '跨夜 / 凌晨' },
-        { left: (22 / AXIS_SPAN) * 100, width: (2 / AXIS_SPAN) * 100, label: '跨夜' },
-      ];
+        clipZone(0, 6, '跨夜 / 凌晨'),
+        clipZone(22, 30, '跨夜'),
+      ].filter(Boolean);
       const peakZones = [
-        { left: ((11.5 - AXIS_START) / AXIS_SPAN) * 100, width: (2.5 / AXIS_SPAN) * 100, label: '午尖峰' },
-        { left: ((17.5 - AXIS_START) / AXIS_SPAN) * 100, width: (3.0 / AXIS_SPAN) * 100, label: '晚尖峰' },
-      ];
+        clipZone(11.5, 14.0, '午尖峰'),
+        clipZone(17.5, 20.5, '晚尖峰'),
+      ].filter(Boolean);
 
       const selIdx = FORECASTS.findIndex(f => f.date === selDate);
       const prevDate = selIdx > 0 ? FORECASTS[selIdx - 1].date : null;
@@ -1892,24 +1924,22 @@
           prevSegs.forEach(ps => {
             if (ps.end > 24) {
               const tailEnd = Math.min(24, ps.end - 24);
-              carrySegments.push({ start: 0, end: tailEnd, isCarryOver: true, prevDate, station: prevShift ? prevShift.station : null, label: `前日跨夜 00:00–${fmtHour(tailEnd)}` });
+              if (tailEnd > AXIS_START) {
+                carrySegments.push({ start: Math.max(0, AXIS_START), end: Math.min(AXIS_END, tailEnd), isCarryOver: true, prevDate, station: prevShift ? prevShift.station : null, label: `前日跨夜 00:00–${fmtHour(tailEnd)}` });
+              }
             }
           });
         }
         const hours = dayCfg.isClosed ? 0 : getShiftNetHours(shift);
-        const allVisualSegs = [
-          ...carrySegments,
-          ...segments.map(seg => ({ ...seg, visStart: Math.max(0, seg.start), visEnd: Math.min(24, seg.end) })),
-        ];
-        return { emp, shift, segments, carrySegments, allVisualSegs, hours, isWorking: segments.length > 0 || carrySegments.length > 0 };
+        return { emp, shift, segments, carrySegments, hours, isWorking: segments.length > 0 || carrySegments.length > 0 };
       }).filter(row => App.sched.showOffStaff ? true : row.isWorking);
 
       const slotHeadcounts = AXIS_TICKS.map(tick => {
-        const mid = tick + 1;
+        const mid = tick + axis.step / 2;
         return {
           tick,
           count: dayRows.filter(r =>
-            r.segments.some(seg => seg.start <= mid && Math.min(24, seg.end) > mid) ||
+            r.segments.some(seg => seg.start <= mid && seg.end > mid) ||
             r.carrySegments.some(cs => cs.start <= mid && cs.end > mid)
           ).length
         };
@@ -2011,7 +2041,10 @@
                     ${dayCfg.isClosed ? '當日店休' : `已排 ${curDayStat.count} 人 · ${fmtDurationZh(curDayStat.hours)} · 預估 $${(selForecast.revenue/1000).toFixed(1)}k`}
                   </span>
                 </div>
-                <div class="flex items-center gap-3 text-xs">
+                <div class="flex items-center gap-2.5 flex-wrap text-xs">
+                  <button onclick="App.mainTab='SETTINGS';App.storeSettings.subTab='BASIC';render()" class="h-7 px-2.5 rounded-lg bg-teal-50 border border-teal-200 text-[#0F766E] hover:bg-teal-100/70 text-[11px] font-semibold mono-num cursor-pointer" title="前往店鋪基本資料調整可排班時間">
+                    可排班時段 ${axis.label}
+                  </button>
                   <label class="flex items-center gap-1.5 text-slate-600 font-medium cursor-pointer">
                     <input type="checkbox" ${App.sched.showOffStaff ? 'checked' : ''} onchange="App.sched.showOffStaff=this.checked;render()" class="rounded border-slate-300" />
                     顯示休假夥伴
@@ -2022,16 +2055,16 @@
                 </div>
               </div>
 
-              <!-- 甘特圖 (24 小時全時段 + 跨夜銜接) -->
+              <!-- 甘特圖 (依店鋪可排班時段動態呈現 + 跨夜銜接) -->
               <div class="overflow-x-auto">
-                <div class="min-w-[980px]">
+                <div class="${AXIS_SPAN >= 18 ? 'min-w-[960px]' : 'min-w-[800px]'}">
                   <div class="grid border-b border-[var(--border)] bg-slate-50/80 text-[11px] text-slate-500 font-semibold" style="grid-template-columns: 180px 1fr;">
                     <div class="px-4 flex items-center border-r border-[var(--border)]">員工 / 累計工時</div>
                     <div class="relative h-12">
                       ${nightZones.map(z => `<div class="absolute top-0 bottom-0 bg-indigo-500/[0.06] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-indigo-100/90 text-indigo-800 font-semibold">${z.label}</span></div>`).join('')}
                       ${peakZones.map(z => `<div class="absolute top-0 bottom-0 bg-amber-500/[0.08] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-amber-100/90 text-amber-800 font-semibold">${z.label}</span></div>`).join('')}
-                      ${AXIS_TICKS.map(t => `<span class="absolute bottom-1.5 mono-num pl-1 leading-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t).padStart(2,'0')}:00</span>`).join('')}
-                      <span class="absolute bottom-1.5 right-1 mono-num leading-none text-slate-400">24:00</span>
+                      ${AXIS_TICKS.map(t => `<span class="absolute bottom-1.5 mono-num pl-1 leading-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t % 24).padStart(2,'0')}:00</span>`).join('')}
+                      <span class="absolute bottom-1.5 right-1 mono-num leading-none text-slate-400">${axis.endLabel}</span>
                     </div>
                   </div>
 
@@ -2945,6 +2978,41 @@
                 <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">門市地址</label><input value="${st.address}" oninput="App.storeSettings.address=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
                 <div><label class="block font-semibold text-slate-600 mb-1">聯絡電話</label><input value="${st.phone}" oninput="App.storeSettings.phone=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" /></div>
               </div>
+              ${(() => {
+                const ax = getStoreScheduleAxis();
+                const startOpts = Array.from({ length: 24 }, (_, h) => h);
+                const endOpts = Array.from({ length: 24 }, (_, i) => i + 1);
+                return `
+                  <div class="p-4 rounded-xl bg-teal-50/50 border border-teal-200/80 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-slate-900">可排班時間範圍（即時同步排班時間軸）</div>
+                        <div class="text-[11px] text-slate-600 mt-0.5">非 24 小時門市可依營業前後備料時段設定顯示範圍，避免時間軸出現過長空白；若結束時間早於開始時間則自動啟用跨夜時間軸。</div>
+                      </div>
+                      <span class="px-2.5 py-1 rounded-full bg-white border border-teal-200 text-[#0F766E] font-bold mono-num text-[11px]">目前顯示：${ax.label}</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3">
+                      <label class="flex items-center gap-1.5 font-semibold text-slate-700">
+                        可排班開始：
+                        <select onchange="setStoreScheduleRange(Number(this.value), ${ax.rawEnd})" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-bold cursor-pointer">
+                          ${startOpts.map(h => `<option value="${h}" ${ax.start===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}
+                        </select>
+                      </label>
+                      <label class="flex items-center gap-1.5 font-semibold text-slate-700">
+                        可排班結束：
+                        <select onchange="setStoreScheduleRange(${ax.start}, Number(this.value))" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-bold cursor-pointer">
+                          ${endOpts.map(h => `<option value="${h}" ${ax.rawEnd===h?'selected':''}>${h===24 ? '24:00' : `${String(h).padStart(2,'0')}:00${h <= ax.start ? ' (隔日 +1)' : ''}`}</option>`).join('')}
+                        </select>
+                      </label>
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <button type="button" onclick="setStoreScheduleRange(8, 23)" class="h-8 px-2.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${ax.start===8&&ax.rawEnd===23?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700 hover:border-[#0F766E]'}">日間門市 (08:00–23:00)</button>
+                        <button type="button" onclick="setStoreScheduleRange(14, 2)" class="h-8 px-2.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${ax.start===14&&ax.rawEnd===2?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700 hover:border-[#0F766E]'}">宵夜跨夜 (14:00–02:00)</button>
+                        <button type="button" onclick="setStoreScheduleRange(0, 24)" class="h-8 px-2.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${ax.is24h?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700 hover:border-[#0F766E]'}">24 小時全天候 (00:00–24:00)</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              })()}
               <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
                 <div class="font-bold text-slate-800">每週固定店休日（即時同步排班時間軸）</div>
                 <div class="flex flex-wrap gap-2">
@@ -4959,9 +5027,24 @@
         en: 'Overnight shifts supported: if End Time is earlier than Start Time (e.g. 22:00 → 06:00), it auto-schedules as an overnight shift (+1) and carries over to next day 00:00–06:00.',
         ja: '跨夜シフト対応：退勤時刻が出勤時刻より早い場合（例：22:00 → 06:00）、自動で跨夜シフト(+1)となり翌日の深夜タイムラインに接続されます。',
       },
+      '可排班時間範圍（即時同步排班時間軸）': { en: 'Schedulable Time Range (Syncs Timeline)', ja: 'シフト可能時間帯（タイムライン即時連動）' },
+      '非 24 小時門市可依營業前後備料時段設定顯示範圍，避免時間軸出現過長空白；若結束時間早於開始時間則自動啟用跨夜時間軸。': {
+        en: 'Non-24h stores can tailor the visible timeline range to avoid empty gaps; setting End earlier than Start enables an overnight timeline.',
+        ja: '24時間営業でない店舗は仕込み・営業時間に合わせて表示範囲を設定できます。終了が開始より早い場合は自動で跨夜表示になります。',
+      },
+      '可排班開始：': { en: 'Start:', ja: '開始：' },
+      '可排班結束：': { en: 'End:', ja: '終了：' },
+      '日間門市 (08:00–23:00)': { en: 'Daytime (08:00–23:00)', ja: '日中営業 (08:00–23:00)' },
+      '宵夜跨夜 (14:00–02:00)': { en: 'Late Night (14:00–02:00)', ja: '深夜営業 (14:00–02:00)' },
+      '24 小時全天候 (00:00–24:00)': { en: '24-Hour (00:00–24:00)', ja: '24時間営業 (00:00–24:00)' },
+      '前往店鋪基本資料調整可排班時間': { en: 'Configure schedulable hours in Store Settings', ja: '店舗基本設定でシフト可能時間を変更' },
     };
 
     const I18N_PATTERNS = [
+      [/^可排班時段 (.+)$/, { en: 'Window: $1', ja: '表示範囲 $1' }],
+      [/^目前顯示：(.+)$/, { en: 'Current: $1', ja: '現在の表示：$1' }],
+      [/^已更新店鋪可排班時間為 (.+?)，排班時間軸已即時同步。$/, { en: 'Updated store schedulable hours to $1; timeline synced.', ja: '店舗シフト可能時間を $1 に更新しタイムラインへ同期しました。' }],
+      [/^(\d{2}:00) \(隔日 \+1\)$/, { en: '$1 (+1 Next Day)', ja: '$1 (翌日 +1)' }],
       [/^前日跨夜 (.+)$/, { en: 'Prev Overnight $1', ja: '前日跨夜 $1' }],
       [/^已更新 (.+?) \((.+?)\) 跨夜班次，隔日時間軸將自動銜接凌晨時段。$/, { en: 'Updated overnight shift for $1 ($2); carry-over synced to next day timeline.', ja: '$1 ($2) の跨夜シフトを更新しました。翌日の深夜時間帯に自動接続されます。' }],
       [/^帳單與發票 \((\d+)\)$/, { en: 'Invoices ($1)', ja: '請求書・履歴 ($1)' }],
