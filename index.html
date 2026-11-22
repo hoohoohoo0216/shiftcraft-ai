@@ -593,16 +593,104 @@
       const d = App.auth.loginDraft;
       if (!d.email.trim()) { App.toast = '請輸入登入 Email 帳號。'; render(); return; }
       App.auth.email = d.email.trim();
-      if (App.auth.authMode === 'REGISTER' && d.companyName.trim()) {
-        App.auth.companyName = d.companyName.trim();
-        App.billing.storeCount = Math.max(1, Number(d.storeCount) || 1);
+      const isRegister = App.auth.authMode === 'REGISTER';
+      if (isRegister && d.companyName.trim()) {
+        const brandName = d.companyName.trim();
+        const storeCnt = Math.max(1, Number(d.storeCount) || 1);
+        App.auth.companyName = brandName;
+        App.billing.storeCount = storeCnt;
+        // 為新註冊餐飲品牌自動建立獨立雲端空間（多品牌完全隔離）
+        const newBrandId = 'brand-' + Date.now().toString(36);
+        App.multiStore.brandId = newBrandId;
+        App.multiStore.stores = Array.from({ length: Math.min(storeCnt, 10) }, (_, idx) => ({
+          id: 'store-0' + (idx + 1),
+          name: idx === 0 ? `${brandName}・總店` : `${brandName}・第 ${idx + 1} 分店`,
+          city: '台灣',
+        }));
+        App.multiStore.activeStoreId = 'store-01';
+        App.multiStore.storeData = {};
+        App.storeSettings.name = App.multiStore.stores[0].name;
+        App.storeSettings.brandName = brandName;
+        try {
+          localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({
+            url: App.cloud.url || DEFAULT_CLOUD_CONFIG.url,
+            anonKey: App.cloud.anonKey || DEFAULT_CLOUD_CONFIG.anonKey,
+            brandId: newBrandId,
+          }));
+        } catch (err) {}
       }
       App.auth.loggedIn = true;
-      App.auth.lastLoginAt = '2026-11-21 剛剛';
-      App.toast = App.auth.authMode === 'REGISTER'
-        ? `歡迎加入班匠 ShiftCraft！「${App.auth.companyName}」已開通 14 天免費試用。`
+      App.auth.lastLoginAt = new Date().toLocaleTimeString('zh-TW', { hour12: false }) + ' 剛剛';
+      App.toast = isRegister
+        ? `歡迎加入班匠！「${App.auth.companyName}」專屬雲端多店空間已建立，14 天試用啟動！`
         : `歡迎回來，已使用「${App.auth.email}」登入營運後台。`;
       render();
+      if (isRegister) { initCloudSync(false); }
+    }
+
+    function syncBoundLineEmployee() {
+      const prof = App.lineLiff && App.lineLiff.profile;
+      if (!prof || !prof.userId) return null;
+      const matched = App.employees.find(e => e.lineUserId === prof.userId);
+      if (matched) {
+        App.attendance.liffEmpId = matched.id;
+        App.liff.empId = matched.id;
+        App.payroll.liffEmpId = matched.id;
+        App.payroll.selectedEmpId = matched.id;
+        App.sched.liffEmpId = matched.id;
+      }
+      return matched || null;
+    }
+
+    function bindLineUserToEmployee(empId) {
+      const prof = App.lineLiff && App.lineLiff.profile;
+      if (!prof || !prof.userId) return;
+      const target = App.employees.find(e => e.id === empId);
+      if (!target) return;
+      // 清除同一 LINE 帳號原本在其他員工上的舊綁定
+      App.employees.forEach(e => {
+        if (e.lineUserId === prof.userId) {
+          delete e.lineUserId;
+          delete e.lineDisplayName;
+          delete e.linePictureUrl;
+        }
+      });
+      target.lineUserId = prof.userId;
+      target.lineDisplayName = prof.displayName || '';
+      target.linePictureUrl = prof.pictureUrl || '';
+      syncBoundLineEmployee();
+      App.toast = `✅ 已將您的 LINE 綁定為「${target.name}」，下次打開將自動載入您的個人班表與薪資！`;
+      render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+    }
+
+    function unbindLineUser() {
+      const prof = App.lineLiff && App.lineLiff.profile;
+      if (!prof || !prof.userId) return;
+      App.employees.forEach(e => {
+        if (e.lineUserId === prof.userId) {
+          delete e.lineUserId;
+          delete e.lineDisplayName;
+          delete e.linePictureUrl;
+        }
+      });
+      App.toast = '已解除 LINE 員工綁定，您可重新選擇身分。';
+      render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+    }
+
+    function copyStoreLineInviteLink() {
+      const brandId = encodeURIComponent(App.multiStore.brandId || 'brand-shiftcraft-demo');
+      const storeId = encodeURIComponent(App.multiStore.activeStoreId || 'store-01');
+      const link = `https://liff.line.me/${App.lineLiff.liffId}?brand=${brandId}&store=${storeId}`;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(() => {
+          App.toast = `已複製「${App.storeSettings.name}」專屬 LINE 員工連結！傳到門市群組即可使用。`;
+          render();
+        });
+      } else {
+        window.prompt('請複製此門市專屬 LINE 員工連結：', link);
+      }
     }
 
     function loginWithLine() {
@@ -648,6 +736,7 @@
           try {
             const prof = await liff.getProfile();
             App.lineLiff.profile = prof;
+            syncBoundLineEmployee();
           } catch (e) {}
           App.auth.loggedIn = true;
           App.auth.lastLoginAt = '剛剛 (LINE LIFF)';
@@ -657,6 +746,7 @@
           try {
             const prof = await liff.getProfile();
             App.lineLiff.profile = prof;
+            syncBoundLineEmployee();
             render();
           } catch (e) {}
         }
@@ -899,7 +989,13 @@ end $$;`;
 
       App.cloud.url = cfg.url;
       App.cloud.anonKey = cfg.anonKey;
-      if (cfg.brandId) App.multiStore.brandId = cfg.brandId;
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlBrand = urlParams.get('brand');
+      if (urlBrand) {
+        App.multiStore.brandId = urlBrand;
+      } else if (cfg.brandId) {
+        App.multiStore.brandId = cfg.brandId;
+      }
       App.cloud.status = 'CONNECTING';
       App.cloud.error = null;
 
@@ -919,12 +1015,13 @@ end $$;`;
           App.multiStore.stores = data.map(r => ({ id: r.store_id, name: r.store_name, city: r.city || '' }));
           App.multiStore.storeData = {};
           data.forEach(r => { App.multiStore.storeData[r.store_id] = r.payload; });
-          const urlStore = new URLSearchParams(window.location.search).get('store');
+          const urlStore = urlParams.get('store');
           const pickId = (urlStore && App.multiStore.storeData[urlStore]) ? urlStore : data[0].store_id;
           App.multiStore.activeStoreId = pickId;
           const pickMeta = App.multiStore.stores.find(s => s.id === pickId);
           _suppressCloudPush = true;
           applyStoreSnapshot(App.multiStore.storeData[pickId], pickMeta);
+          syncBoundLineEmployee();
           _suppressCloudPush = false;
           App.billing.storeCount = Math.max(App.billing.storeCount, App.multiStore.stores.length);
         } else {
@@ -1763,6 +1860,7 @@ end $$;`;
       }
       App.toast = `${emp.name} 已於 ${hhmm} 完成${kind === 'IN' ? '上班打卡' : '下班簽退'}（GPS 12m 驗證通過）。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
     }
 
     function prefillMissedPunch(empId, date, missingType, existingIn, existingOut) {
@@ -2255,6 +2353,11 @@ end $$;`;
                     <span>${hasRolePerm('hrDocs') || hasRolePerm('schedEdit') ? `編制 ${App.employees.length} 人 (外籍 ${foreignCnt})` : activeRoleMeta.name}</span>
                     <span class="text-emerald-600 font-medium">營業中</span>
                   </div>
+                  ${hasRolePerm('settingsAdmin') ? `
+                    <button onclick="copyStoreLineInviteLink()" class="w-full mt-1 py-1.5 px-2 rounded-md bg-white border border-slate-200 hover:border-[#06C755] hover:text-[#059643] text-[11px] font-semibold text-slate-600 transition cursor-pointer flex items-center justify-center gap-1">
+                      <span>📲 複製門市 LINE 員工連結</span>
+                    </button>
+                  ` : ''}
                 `}
               </div>
 
@@ -4415,6 +4518,7 @@ end $$;`;
       const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
       const lineProf = App.lineLiff && App.lineLiff.profile;
       const isInLineApp = Boolean(App.lineLiff && App.lineLiff.inClient);
+      const boundEmp = (lineProf && lineProf.userId) ? App.employees.find(e => e.lineUserId === lineProf.userId) : null;
 
       return `
         <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
@@ -4425,7 +4529,7 @@ end $$;`;
                   ${lineProf && lineProf.pictureUrl ? `<img src="${lineProf.pictureUrl}" class="w-7 h-7 rounded-full border border-white/60 shrink-0 object-cover" />` : ''}
                   <div class="min-w-0">
                     <div class="font-bold truncate">${lineProf ? `${lineProf.displayName} · 班匠 LINE` : (isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器')}</div>
-                    ${lineProf ? `<div class="text-[10px] text-white/85">LINE LIFF 已連線 · ${App.storeSettings.name}</div>` : ''}
+                    ${lineProf ? `<div class="text-[10px] text-white/85">${App.cloud.status === 'SYNCED' ? '🟢 雲端同步中' : 'LINE LIFF 已連線'} · ${App.storeSettings.name}</div>` : ''}
                   </div>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
@@ -4433,6 +4537,14 @@ end $$;`;
                   <button onclick="closeLiffWindowOrDrawer()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
                 </div>
               </div>
+              ${App.multiStore.stores.length > 1 ? `
+                <select
+                  onchange="switchActiveStore(this.value)"
+                  class="w-full h-7 px-2.5 rounded-lg bg-black/15 border border-white/25 text-white text-[11px] font-bold cursor-pointer"
+                >
+                  ${App.multiStore.stores.map(s => `<option value="${s.id}" class="text-slate-900 bg-white" ${s.id===App.multiStore.activeStoreId?'selected':''}>📍 門市：${s.name}</option>`).join('')}
+                </select>
+              ` : ''}
               ${canLineApprove ? `
                 <div class="grid grid-cols-2 gap-1 bg-black/15 p-1 rounded-lg text-[11px] font-bold">
                   <button onclick="App.liffRole='STAFF';render()" class="py-1 rounded-md transition cursor-pointer ${!isMgr ? 'bg-white text-[#059643] shadow-xs' : 'text-white/90 hover:text-white'}">員工端</button>
@@ -4442,17 +4554,34 @@ end $$;`;
                   </button>
                 </div>
               ` : ''}
-              ${!isMgr && !isStaffOnly ? `
+              ${!isMgr && !isStaffOnly && !boundEmp ? `
                 <select
                   onchange="const v=this.value;if('${mode}'==='ATT')App.attendance.liffEmpId=v;else if('${mode}'==='LEAVE')App.liff.empId=v;else if('${mode}'==='PAYROLL'){App.payroll.liffEmpId=v;App.payroll.selectedEmpId=v;}else App.sched.liffEmpId=v;render()"
                   class="w-full h-8 px-2.5 rounded-lg bg-black/20 border border-white/30 text-white text-xs font-bold cursor-pointer"
                 >
                   ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
                 </select>
-              ` : (!isMgr ? `<div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold">登入員工：${lineProf ? lineProf.displayName : emp.name} (${emp.code})</div>` : '')}
+              ` : (!isMgr ? `
+                <div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold flex items-center justify-between gap-2">
+                  <span class="truncate">${boundEmp ? `✅ 已綁定員工：${boundEmp.name} (${boundEmp.code})` : `登入員工：${lineProf ? lineProf.displayName : emp.name} (${emp.code})`}</span>
+                  ${boundEmp ? `<button onclick="unbindLineUser()" class="shrink-0 underline text-white/85 hover:text-white cursor-pointer text-[10px]">重綁</button>` : ''}
+                </div>
+              ` : '')}
             </div>
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+              ${!isMgr && lineProf && lineProf.userId && !boundEmp ? `
+                <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
+                  <div class="font-bold text-emerald-900">👋 首次使用：一鍵綁定您的員工身分</div>
+                  <div class="text-[11px] text-emerald-800">綁定後，下次從 LINE 點開將自動帶入您的個人班表、打卡與薪資條。</div>
+                  <div class="flex gap-1.5">
+                    <select id="line-bind-emp-select" class="flex-1 h-8 px-2 rounded-lg border border-emerald-300 bg-white text-slate-800 text-xs font-semibold">
+                      ${App.employees.map(e => `<option value="${e.id}" ${e.id===emp.id?'selected':''}>${e.name} (${e.code} · ${e.roleTitle || e.type})</option>`).join('')}
+                    </select>
+                    <button onclick="bindLineUserToEmployee(document.getElementById('line-bind-emp-select').value)" class="px-3 h-8 rounded-lg bg-[#06C755] text-white font-bold cursor-pointer shrink-0">確認綁定</button>
+                  </div>
+                </div>
+              ` : ''}
               ${isMgr ? renderLineManagerApprovalContent() : `
               ${mode === 'PAYROLL' && slip ? `
                 <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
