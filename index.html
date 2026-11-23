@@ -3976,9 +3976,9 @@ end $$;`;
 
               <!-- 甘特圖 (依店鋪可排班時段動態呈現 + 跨夜銜接) -->
               <div class="overflow-x-auto">
-                <div style="min-width: ${Math.max(920, 180 + AXIS_SPAN * 68)}px;">
-                  <div class="grid border-b border-[var(--border)] bg-slate-50/80 text-[11px] text-slate-500 font-semibold" style="grid-template-columns: 180px 1fr;">
-                    <div class="px-4 flex items-center border-r border-[var(--border)]">員工 / 累計工時</div>
+                <div style="min-width: ${Math.max(680, 144 + AXIS_SPAN * 44)}px;">
+                  <div class="grid border-b border-[var(--border)] bg-slate-50/80 text-[10px] text-slate-500 font-semibold" style="grid-template-columns: 144px 1fr;">
+                    <div class="px-3 flex items-center border-r border-[var(--border)] text-[11px]">員工 / 累計工時</div>
                     <div class="relative h-12">
                       ${nightZones.map(z => `<div class="absolute top-0 bottom-0 bg-indigo-500/[0.06] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-indigo-100/90 text-indigo-800 font-semibold">${z.label}</span></div>`).join('')}
                       ${peakZones.map(z => `<div class="absolute top-0 bottom-0 bg-amber-500/[0.08] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-amber-100/90 text-amber-800 font-semibold">${z.label}</span></div>`).join('')}
@@ -4000,10 +4000,10 @@ end $$;`;
                     const hasErr = ev.issues.some(i => i.severity === 'ERROR' && i.empId === row.emp.id && i.date === selDate);
 
                     return `
-                      <div class="grid border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 transition" style="grid-template-columns: 180px 1fr;">
-                        <div class="px-4 py-3 border-r border-[var(--border)] flex flex-col justify-center">
+                      <div class="grid border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 transition" style="grid-template-columns: 144px 1fr;">
+                        <div class="px-3 py-2.5 border-r border-[var(--border)] flex flex-col justify-center">
                           <div class="flex items-center gap-1.5">
-                            <button onclick="startEditHr('${row.emp.id}')" class="text-xs font-bold text-slate-900 hover:text-[#0F766E] cursor-pointer text-left">${row.emp.name}</button>
+                            <button onclick="startEditHr('${row.emp.id}')" class="text-xs font-bold text-slate-900 hover:text-[#0F766E] cursor-pointer text-left truncate">${row.emp.name}</button>
                             ${row.emp.nationalityType === 'FOREIGN' ? '<span class="text-[10px] px-1 py-0.2 rounded bg-sky-50 text-sky-700 font-semibold">外籍</span>' : ''}
                             ${row.emp.flexHoursType && row.emp.flexHoursType !== 'STANDARD' ? '<span class="text-[10px] px-1 py-0.2 rounded bg-teal-50 text-teal-700 font-semibold">彈性</span>' : ''}
                           </div>
