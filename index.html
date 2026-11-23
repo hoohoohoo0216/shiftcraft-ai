@@ -258,7 +258,7 @@
         isTaxResident183Days: true, emergencyName: '', emergencyPhone: '',
         roleTitle: isF ? '外籍僑外生 PT・外場/內場' : '正職夥伴',
         type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), healthCertDate: '',
-        stations: isF ? ['BAR', 'PREP'] : ['BAR', 'POS'], canKey: !isF,
+        stations: [], canKey: !isF,
         baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: isF ? 0 : 3000, posAllow: 0,
         skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: isF ? 0 : 2000, perfBonus: 0,
         laborBracket: isF ? 21000 : 36300, nhiBracket: isF ? 28590 : 36300, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
@@ -910,6 +910,8 @@
       App.storeSettings.brandName = brandName;
       App.storeSettings.address = '';
       App.storeSettings.wifiSsid = '';
+      App.storeSettings.workstations = [];
+      if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       App.storeSettings.admins = [
         { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: email || '', lineBound: false, scope: '全門市', active: true },
       ];
@@ -949,6 +951,8 @@
       App.storeSettings.activeRole = 'OWNER';
       App.storeSettings.address = '';
       App.storeSettings.wifiSsid = '';
+      App.storeSettings.workstations = [];
+      if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       App.storeSettings.admins = [
         { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: App.auth.email || '', lineBound: false, scope: '全門市', active: true },
       ];
@@ -1393,6 +1397,7 @@ end $$;`;
       base.sched.shifts = [];
       base.sched.weeklyRevenue = 0;
       base.storeSettings.name = storeMeta.name;
+      base.storeSettings.workstations = [];
       if (storeMeta.city) base.storeSettings.address = storeMeta.city;
       base.liff.requests = [];
       base.liff.balances = {};
@@ -1427,6 +1432,7 @@ end $$;`;
       }
       if (snap.storeSettings) {
         App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
+        if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       }
       if (storeMeta && storeMeta.name) App.storeSettings.name = storeMeta.name;
     }
@@ -3047,15 +3053,9 @@ end $$;`;
       render();
     }
     function deleteStoreWorkstation(code) {
-      if (App.storeSettings.workstations.length <= 1) {
-        App.toast = '門市至少需保留 1 個工作站，無法全部刪除。';
-        App.storeSettings.confirmDeleteWsCode = null;
-        render();
-        return;
-      }
       const ws = App.storeSettings.workstations.find(w => w.code === code);
       App.storeSettings.workstations = App.storeSettings.workstations.filter(w => w.code !== code);
-      const fallbackCode = App.storeSettings.workstations[0].code;
+      const fallbackCode = App.storeSettings.workstations[0] ? App.storeSettings.workstations[0].code : '';
       App.employees.forEach(emp => {
         if (Array.isArray(emp.stations)) emp.stations = emp.stations.filter(x => x !== code);
       });
@@ -3069,7 +3069,7 @@ end $$;`;
       }
       App.storeSettings.confirmDeleteWsCode = null;
       syncStationsCatalog();
-      App.toast = `已刪除工作站「${ws ? ws.name : code}」，原排班站點已安全轉移至預設工作站。`;
+      App.toast = `已刪除工作站「${ws ? ws.name : code}」。`;
       render();
     }
     function toggleEmployeeStationSkill(empId, stCode) {
