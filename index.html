@@ -140,7 +140,7 @@
     const FOREIGN_NATIONALITIES = ['越南 (Vietnam)', '印尼 (Indonesia)', '馬來西亞 (Malaysia)', '菲律賓 (Philippines)', '泰國 (Thailand)', '日本 (Japan)'];
 
     const FOREIGN_STATUSES = [
-      { code: 'STUDENT_PT', label: '僑外生 / 外籍留學生工讀 (餐飲大宗)', needPermit: true, pension6: false, warnLabel: '超過 20h/週 僅顯示軟警告（不鎖定排班）', note: '依就服法第50條，學期中每週參考工時為 20 小時（寒暑假不限），超過時僅亮黃燈提醒，不阻擋排班。' },
+      { code: 'STUDENT_PT', label: '僑外生 / 外籍留學生工讀', needPermit: true, pension6: false, warnLabel: '超過 20h/週 僅顯示軟警告（不鎖定排班）', note: '依就服法第50條，學期中每週參考工時為 20 小時（寒暑假不限），超過時僅亮黃燈提醒，不阻擋排班。' },
       { code: 'SPOUSE_APRC', label: '外籍配偶 (依親居留) / 永久居留 (APRC)', needPermit: false, pension6: true, warnLabel: '一般勞基法工時提醒', note: '依就服法第48條免申請工作許可；依勞退條例第7條強制適用勞退新制 6% 雇主提撥。' },
       { code: 'WHITE_COLLAR', label: '專業外籍人士 (白領工作許可)', needPermit: true, pension6: false, warnLabel: '一般勞基法工時提醒', note: '須留存勞動部白領聘僱許可函，系統於屆期前 60 天發送續簽提醒。' },
     ];
@@ -457,7 +457,7 @@
         ocrHits: {},
         watermark: true,
         rosterFilter: 'ALL',
-        form: makeEmptyHrForm('FOREIGN'),
+        form: makeEmptyHrForm('LOCAL'),
         previewImgModal: null,
       },
 
@@ -2280,6 +2280,16 @@ end $$;`;
       e.preventDefault();
       const f = App.hr.form;
       if (!f.name.trim() || !f.nationalId.trim()) { App.toast = '請填入「姓名」與「身分證 / ARC 統一證號」。'; render(); return; }
+      if (f.nationalityType !== 'FOREIGN') {
+        f.nationalityType = 'LOCAL';
+        f.nationality = '中華民國 (台灣)';
+        f.foreignStatusType = '';
+        if (!f.roleTitle || f.roleTitle.includes('外籍') || f.roleTitle === '正職夥伴' || f.roleTitle === '計時夥伴') {
+          f.roleTitle = f.type === 'PT' ? '計時夥伴' : '正職夥伴';
+        }
+      } else if (!f.roleTitle || f.roleTitle === '正職夥伴' || f.roleTitle === '計時夥伴' || f.roleTitle === '外籍正職夥伴' || f.roleTitle === '外籍計時夥伴') {
+        f.roleTitle = f.type === 'PT' ? '外籍計時夥伴' : '外籍正職夥伴';
+      }
       if (App.hr.editingId) {
         const idx = App.employees.findIndex(x => x.id === App.hr.editingId);
         if (idx >= 0) App.employees[idx] = { ...App.employees[idx], ...JSON.parse(JSON.stringify(f)) };
@@ -2302,7 +2312,7 @@ end $$;`;
         });
         App.toast = `新進員工「${newEmp.name}」建檔完成，已同步寫入排班與薪資系統。`;
       }
-      App.hr.form = makeEmptyHrForm(f.nationalityType);
+      App.hr.form = makeEmptyHrForm('LOCAL');
       App.hr.subTab = 'ROSTER';
       render();
     }
@@ -3797,8 +3807,8 @@ end $$;`;
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <div class="flex items-center gap-2">
                     <span class="font-bold text-slate-700">聘僱身分別：</span>
-                    <button type="button" onclick="App.hr.form.nationalityType='LOCAL';App.hr.form.nationality='中華民國 (台灣)';App.hr.form.isTaxResident183Days=true;render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${!isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">本國籍員工</button>
-                    <button type="button" onclick="App.hr.form.nationalityType='FOREIGN';if(App.hr.form.nationality==='中華民國 (台灣)')App.hr.form.nationality='越南 (Vietnam)';render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">外籍員工 (ARC / 工作證 / 183天稅務)</button>
+                    <button type="button" onclick="App.hr.form.nationalityType='LOCAL';App.hr.form.nationality='中華民國 (台灣)';App.hr.form.foreignStatusType='';App.hr.form.isTaxResident183Days=true;if(!App.hr.form.roleTitle||App.hr.form.roleTitle.includes('外籍'))App.hr.form.roleTitle=(App.hr.form.type==='PT'?'計時夥伴':'正職夥伴');render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${!isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">本國籍員工</button>
+                    <button type="button" onclick="App.hr.form.nationalityType='FOREIGN';if(App.hr.form.nationality==='中華民國 (台灣)')App.hr.form.nationality='越南 (Vietnam)';if(!App.hr.form.foreignStatusType)App.hr.form.foreignStatusType='STUDENT_PT';if(!App.hr.form.roleTitle||App.hr.form.roleTitle==='正職夥伴'||App.hr.form.roleTitle==='計時夥伴')App.hr.form.roleTitle=(App.hr.form.type==='PT'?'外籍計時夥伴':'外籍正職夥伴');render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">外籍員工</button>
                   </div>
                   ${App.hr.editingId ? `<button type="button" onclick="App.hr.editingId=null;App.hr.form=makeEmptyHrForm('LOCAL');render()" class="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-semibold cursor-pointer">取消編輯 (${f.name})</button>` : ''}
                 </div>
@@ -3902,8 +3912,8 @@ end $$;`;
                       <div class="flex items-center justify-between mb-1">
                         <label class="font-semibold text-slate-600">勞保級距 (上限$45,800)</label>
                         ${f.laborBracketManual
-                          ? `<button type="button" onclick="App.hr.form.laborBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">手動・重帶</button>`
-                          : `<span class="text-[10px] text-emerald-700 font-semibold">自動帶入</span>`}
+                          ? `<button type="button" onclick="App.hr.form.laborBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">重算級距</button>`
+                          : ''}
                       </div>
                       <select id="hr-labor-bracket-select" onchange="App.hr.form.laborBracket=Number(this.value);App.hr.form.laborBracketManual=true;render()" class="w-full h-9 px-2 rounded-lg border ${f.laborBracketManual?'border-amber-400 bg-amber-50/40':'border-slate-200'} mono-num font-semibold">${TW_LABOR_BRACKETS.map(b=>`<option value="${b}" ${(f.laborBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select>
                     </div>
@@ -3911,8 +3921,8 @@ end $$;`;
                       <div class="flex items-center justify-between mb-1">
                         <label class="font-semibold text-slate-600">健保級距 (最低$28,590)</label>
                         ${f.nhiBracketManual
-                          ? `<button type="button" onclick="App.hr.form.nhiBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">手動・重帶</button>`
-                          : `<span class="text-[10px] text-emerald-700 font-semibold">自動帶入</span>`}
+                          ? `<button type="button" onclick="App.hr.form.nhiBracketManual=false;syncHrBracketsFromSalary(false);render()" class="text-[10px] text-[#0F766E] font-bold hover:underline cursor-pointer">重算級距</button>`
+                          : ''}
                       </div>
                       <select id="hr-nhi-bracket-select" onchange="App.hr.form.nhiBracket=Number(this.value);App.hr.form.nhiBracketManual=true;render()" class="w-full h-9 px-2 rounded-lg border ${f.nhiBracketManual?'border-amber-400 bg-amber-50/40':'border-slate-200'} mono-num font-semibold">${TW_NHI_BRACKETS.map(b=>`<option value="${b}" ${(f.nhiBracket||f.bracket)===b?'selected':''}>$${b.toLocaleString()}</option>`).join('')}</select>
                     </div>
