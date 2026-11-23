@@ -430,8 +430,7 @@
         selectedDate: '2026-11-28',
         showOffStaff: false,
         showIssuesPanel: false,
-        showRevPanel: false,
-        revenuePlan: { weekdayAvg: 0, weekendAvg: 0 },
+        weeklyRevenue: 0,
         stationFilter: 'ALL',
         shifts: JSON.parse(JSON.stringify(INITIAL_SHIFTS)),
         dayConfig: {
@@ -1373,7 +1372,7 @@ end $$;`;
         sched: {
           shifts: JSON.parse(JSON.stringify(App.sched.shifts)),
           dayConfig: JSON.parse(JSON.stringify(App.sched.dayConfig)),
-          revenuePlan: JSON.parse(JSON.stringify(App.sched.revenuePlan || { weekdayAvg: 0, weekendAvg: 0 })),
+          weeklyRevenue: Number(App.sched.weeklyRevenue) || 0,
         },
         payroll: { rules: JSON.parse(JSON.stringify(App.payroll.rules)) },
         liff: {
@@ -1392,7 +1391,7 @@ end $$;`;
       const base = captureActiveStoreSnapshot();
       base.employees = [];
       base.sched.shifts = [];
-      base.sched.revenuePlan = { weekdayAvg: 0, weekendAvg: 0 };
+      base.sched.weeklyRevenue = 0;
       base.storeSettings.name = storeMeta.name;
       if (storeMeta.city) base.storeSettings.address = storeMeta.city;
       base.liff.requests = [];
@@ -1408,7 +1407,7 @@ end $$;`;
       if (snap.sched) {
         if (Array.isArray(snap.sched.shifts)) App.sched.shifts = snap.sched.shifts;
         if (snap.sched.dayConfig) App.sched.dayConfig = snap.sched.dayConfig;
-        App.sched.revenuePlan = snap.sched.revenuePlan ? Object.assign({ weekdayAvg: 0, weekendAvg: 0 }, snap.sched.revenuePlan) : { weekdayAvg: 0, weekendAvg: 0 };
+        App.sched.weeklyRevenue = Number(snap.sched.weeklyRevenue) || 0;
       }
       if (snap.payroll && snap.payroll.rules) App.payroll.rules = Object.assign({}, App.payroll.rules, snap.payroll.rules);
       if (snap.liff) {
@@ -2018,7 +2017,8 @@ end $$;`;
         totalHours += h; totalCost += pay; otCost += empOtPay;
         summaries[emp.id] = { hours: h, days, pay, hasErr };
       }
-      const totalRev = FORECASTS.reduce((a, b) => a + getDayEstimatedRevenue(b.date), 0);
+      const manualRev = Number(App.sched && App.sched.weeklyRevenue) || 0;
+      const totalRev = manualRev > 0 ? manualRev : (App.auth && App.auth.isDemo ? FORECASTS.reduce((a, b) => a + b.revenue, 0) : 0);
       return { issues, summaries, totalHours, totalCost, otCost, totalRev, ratio: totalRev > 0 ? ((totalCost / totalRev) * 100).toFixed(1) : null };
     }
 
@@ -2029,17 +2029,33 @@ end $$;`;
     function getDayEstimatedRevenue(date) {
       const cfg = getEffectiveDayConfig(date);
       if (cfg && cfg.isClosed) return 0;
-      const fc = FORECASTS.find(f => f.date === date);
-      const rp = App.sched && App.sched.revenuePlan;
-      const wd = rp ? (Number(rp.weekdayAvg) || 0) : 0;
-      const we = rp ? (Number(rp.weekendAvg) || 0) : 0;
-      if (wd > 0 || we > 0) {
-        return (fc && fc.isPeak) ? (we || wd) : (wd || we);
-      }
-      if (App.auth && App.auth.isDemo) {
+      if (App.auth && App.auth.isDemo && !(Number(App.sched && App.sched.weeklyRevenue) > 0)) {
+        const fc = FORECASTS.find(f => f.date === date);
         return fc ? (fc.revenue || 0) : 0;
       }
       return 0;
+    }
+
+    function onWeeklyRevenueInput(rawVal) {
+      const digits = String(rawVal || '').replace(/[^\d]/g, '');
+      const num = digits ? parseInt(digits, 10) : 0;
+      App.sched.weeklyRevenue = num;
+      const ev = evalSchedule();
+      const badge = document.getElementById('weekly-labor-ratio-badge');
+      if (badge) {
+        if (ev.ratio !== null) {
+          const r = Number(ev.ratio);
+          const colorCls = r > 35
+            ? 'bg-rose-50 border-rose-200 text-rose-700'
+            : (r > 30 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-emerald-50 border-emerald-200 text-emerald-700');
+          badge.className = `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold mono-num ${colorCls}`;
+          badge.innerHTML = `<span>本週人力佔營收比</span><strong>${ev.ratio}%</strong><span class="text-[11px] opacity-80">(人力 NT$${ev.totalCost.toLocaleString()})</span>`;
+        } else {
+          badge.className = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-slate-50 text-slate-500 text-xs font-medium';
+          badge.innerHTML = '<span>本週人力佔營收比</span><strong class="mono-num">—</strong>';
+        }
+      }
+      scheduleCloudPush();
     }
 
     function runAiOptimize() {
@@ -3399,16 +3415,34 @@ end $$;`;
               <div class="px-3 py-1.5 rounded-lg bg-white border border-[var(--border)] font-medium text-slate-600">
                 全週工時 <strong class="text-slate-900 mono-num ml-1">${ev.totalHours.toFixed(1)}h</strong>
               </div>
-              ${hasRolePerm('payrollManage') || hasRolePerm('settingsAdmin') ? `
-                <button onclick="App.sched.showRevPanel=!App.sched.showRevPanel;render()" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-[var(--border)] font-medium text-slate-600 cursor-pointer transition" title="點擊查看預估週營收計算方式並設定目標">
-                  <span>預估週營收</span>
-                  ${ev.totalRev > 0
-                    ? `<strong class="text-slate-900 mono-num">$${(ev.totalRev/1000).toFixed(1)}k</strong>${ev.ratio ? `<span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 mono-num">人事 ${ev.ratio}%</span>` : ''}`
-                    : `<strong class="text-[#0F766E]">尚未設定 · 點此填寫</strong>`
-                  }
-                  <span class="text-slate-400 text-[11px]">ⓘ</span>
-                </button>
-              ` : ''}
+              ${hasRolePerm('schedEdit') || hasRolePerm('payrollManage') || hasRolePerm('settingsAdmin') ? (() => {
+                const ratioNum = ev.ratio !== null ? Number(ev.ratio) : null;
+                const ratioCls = ratioNum === null
+                  ? 'border-[var(--border)] bg-slate-50 text-slate-500 font-medium'
+                  : (ratioNum > 35
+                    ? 'bg-rose-50 border-rose-200 text-rose-700 font-semibold'
+                    : (ratioNum > 30 ? 'bg-amber-50 border-amber-200 text-amber-800 font-semibold' : 'bg-emerald-50 border-emerald-200 text-emerald-700 font-semibold'));
+                return `
+                  <label class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-[var(--border)] font-medium text-slate-600 focus-within:border-[#0F766E]">
+                    <span>預估週營收</span>
+                    <span class="text-slate-400 mono-num">NT$</span>
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      value="${App.sched.weeklyRevenue ? App.sched.weeklyRevenue : (App.auth.isDemo && ev.totalRev ? ev.totalRev : '')}"
+                      placeholder="輸入金額"
+                      oninput="onWeeklyRevenueInput(this.value)"
+                      onblur="render()"
+                      class="w-24 bg-transparent text-slate-900 font-bold mono-num focus:outline-none placeholder:font-normal placeholder:text-slate-400"
+                    />
+                  </label>
+                  <div id="weekly-labor-ratio-badge" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs mono-num ${ratioCls}" title="本週排班預估薪資成本 ÷ 預估週營收">
+                    <span>本週人力佔營收比</span>
+                    <strong>${ev.ratio !== null ? `${ev.ratio}%` : '—'}</strong>
+                    ${ev.ratio !== null ? `<span class="text-[11px] opacity-80">(人力 NT$${ev.totalCost.toLocaleString()})</span>` : ''}
+                  </div>
+                `;
+              })() : ''}
               ${(errCnt + warnCnt) > 0 ? `
                 <button onclick="App.sched.showIssuesPanel=!App.sched.showIssuesPanel;render()" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer border ${errCnt > 0 ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-amber-50 border-amber-200 text-amber-800'}">
                   ${ICONS.alert}
@@ -3433,42 +3467,6 @@ end $$;`;
               ` : '')}
             </div>
           </div>
-
-          <!-- 預估週營收來源說明與設定面板 -->
-          ${App.sched.showRevPanel && (hasRolePerm('payrollManage') || hasRolePerm('settingsAdmin')) ? (() => {
-            const rp = App.sched.revenuePlan || { weekdayAvg: 0, weekendAvg: 0 };
-            const openWeekdays = FORECASTS.filter(f => !f.isPeak && !getEffectiveDayConfig(f.date).isClosed).length;
-            const openWeekends = FORECASTS.filter(f => f.isPeak && !getEffectiveDayConfig(f.date).isClosed).length;
-            const closedDays = 7 - openWeekdays - openWeekends;
-            return `
-              <div class="bg-white border border-teal-200 rounded-xl p-4 space-y-3 text-xs shadow-xs">
-                <div class="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <div class="font-bold text-slate-900">📊 預估週營收設定與計算方式說明</div>
-                    <p class="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                      <strong>數字怎麼來：</strong>由店長填寫門市「平日日均」與「假日尖峰日均」預估營收，系統自動乘以本週實際營業天數（<strong>平日 ${openWeekdays} 天 ＋ 假日 ${openWeekends} 天${closedDays > 0 ? `，已自動排除 ${closedDays} 天店休` : ''}</strong>），並對照本週排班人力算出「預估人事佔比 %」（餐飲業建議維持在 25%–32% 以內）。
-                      ${App.auth.isDemo && !rp.weekdayAvg && !rp.weekendAvg ? '（目前體驗模式使用示範門市營收）' : ''}
-                    </p>
-                  </div>
-                  <button onclick="App.sched.showRevPanel=false;render()" class="px-2 py-1 rounded border border-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer font-semibold">收合</button>
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                  <div>
-                    <label class="block font-semibold text-slate-700 mb-1">平日日均預估營收（週一～週四）</label>
-                    <input type="number" min="0" step="1000" value="${rp.weekdayAvg || ''}" placeholder="例：35000" oninput="if(!App.sched.revenuePlan)App.sched.revenuePlan={weekdayAvg:0,weekendAvg:0};App.sched.revenuePlan.weekdayAvg=Math.max(0,Number(this.value)||0);render()" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" />
-                  </div>
-                  <div>
-                    <label class="block font-semibold text-slate-700 mb-1">假日尖峰日均預估營收（週五～週日）</label>
-                    <input type="number" min="0" step="1000" value="${rp.weekendAvg || ''}" placeholder="例：55000" oninput="if(!App.sched.revenuePlan)App.sched.revenuePlan={weekdayAvg:0,weekendAvg:0};App.sched.revenuePlan.weekendAvg=Math.max(0,Number(this.value)||0);render()" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" />
-                  </div>
-                  <div class="rounded-lg bg-teal-50/70 border border-teal-200/80 px-3 py-2 mono-num">
-                    <div class="text-[11px] text-teal-800">本週預估總營收</div>
-                    <div class="text-sm font-bold text-[#0F766E]">NT$${ev.totalRev.toLocaleString()}${ev.ratio ? ` · 人事佔比 ${ev.ratio}%` : ''}</div>
-                  </div>
-                </div>
-              </div>
-            `;
-          })() : ''}
 
           <!-- 可折疊法規明細 -->
           ${App.sched.showIssuesPanel && ev.issues.length > 0 ? `
