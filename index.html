@@ -575,6 +575,15 @@
           { code: 'PREP', name: '後場煮茶・備料珍珠', shortName: '後場備料', desc: '原葉茶湯熬煮、蜜製波霸、切果收班', badgeBg: '#E0E7FF', badgeText: '#3730A3', minMorning: 1, minLunchPeak: 1, minEvening: 1, requiresCert: false, active: true },
         ],
         workstationDraft: { code: '', name: '', shortName: '', desc: '', colorKey: 'PURPLE' },
+        shiftTemplates: [
+          { code: 'MORNING', name: '早班 (開早備料)', startTime: '08:30', endTime: '17:00', breakMins: 60 },
+          { code: 'MID', name: '午尖峰支援 (PT短班)', startTime: '11:00', endTime: '15:30', breakMins: 0 },
+          { code: 'EVENING', name: '晚班 (打烊結帳)', startTime: '14:00', endTime: '22:30', breakMins: 60 },
+          { code: 'SPLIT', name: '兩頭班 (午晚雙尖峰)', startTime: '10:30', endTime: '21:30', breakMins: 180, isSplit: true },
+          { code: 'OVERNIGHT', name: '大夜班 (跨夜營業 / 清潔)', startTime: '22:00', endTime: '06:00', breakMins: 30 },
+        ],
+        shiftTemplateDraft: { name: '', startTime: '09:00', endTime: '17:30', breakMins: 30 },
+        editingShiftTplCode: null,
       },
 
       auth: {
@@ -1444,6 +1453,7 @@ end $$;`;
       if (snap.storeSettings) {
         App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
         if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
+        if (typeof syncShiftTemplatesCatalog === 'function') syncShiftTemplatesCatalog();
       }
       if (storeMeta && storeMeta.name) App.storeSettings.name = storeMeta.name;
     }
@@ -2992,6 +3002,88 @@ end $$;`;
         };
       });
     }
+    function _parseTimeToHour(hhmm) {
+      const m = String(hhmm || '09:00').match(/^(\d{1,2}):(\d{2})$/);
+      if (!m) return 9;
+      return parseInt(m[1], 10) + parseInt(m[2], 10) / 60;
+    }
+    function syncShiftTemplatesCatalog() {
+      const list = Array.isArray(App.storeSettings.shiftTemplates) ? App.storeSettings.shiftTemplates : [];
+      // 保留系統固定休假模板，清除舊的上班模板後重新寫入
+      Object.keys(SHIFT_TEMPLATES).forEach(k => {
+        if (k !== 'OFF_REG' && k !== 'OFF_REST') delete SHIFT_TEMPLATES[k];
+      });
+      const offReg = SHIFT_TEMPLATES.OFF_REG;
+      const offRest = SHIFT_TEMPLATES.OFF_REST;
+      delete SHIFT_TEMPLATES.OFF_REG;
+      delete SHIFT_TEMPLATES.OFF_REST;
+      list.forEach(t => {
+        if (!t || !t.code) return;
+        const sh = _parseTimeToHour(t.startTime);
+        let eh = _parseTimeToHour(t.endTime);
+        const isOvernight = eh <= sh;
+        if (isOvernight) eh += 24;
+        const brkH = Math.max(0, Number(t.breakMins) || 0) / 60;
+        const netHours = Math.max(0.5, Math.round((eh - sh - brkH) * 10) / 10);
+        SHIFT_TEMPLATES[t.code] = {
+          code: t.code,
+          name: t.name,
+          shortLabel: t.name.slice(0, 6),
+          timeRange: `${t.startTime}-${t.endTime}${isOvernight ? ' (+1)' : ''}`,
+          startHour: sh,
+          endHour: eh,
+          netHours,
+          isOff: false,
+          isOvernight,
+        };
+      });
+      if (offReg) SHIFT_TEMPLATES.OFF_REG = offReg;
+      if (offRest) SHIFT_TEMPLATES.OFF_REST = offRest;
+    }
+    function saveShiftTemplate(e) {
+      if (e) e.preventDefault();
+      const d = App.storeSettings.shiftTemplateDraft || {};
+      const name = String(d.name || '').trim();
+      const startTime = String(d.startTime || '09:00').trim();
+      const endTime = String(d.endTime || '17:30').trim();
+      const breakMins = Math.max(0, Number(d.breakMins) || 0);
+      if (!name) { App.toast = '請輸入班別名稱（例如：早班、午間 PT、晚場收班）。'; render(); return; }
+      if (!Array.isArray(App.storeSettings.shiftTemplates)) App.storeSettings.shiftTemplates = [];
+      if (App.storeSettings.editingShiftTplCode) {
+        const idx = App.storeSettings.shiftTemplates.findIndex(x => x.code === App.storeSettings.editingShiftTplCode);
+        if (idx >= 0) {
+          App.storeSettings.shiftTemplates[idx] = { ...App.storeSettings.shiftTemplates[idx], name, startTime, endTime, breakMins };
+        }
+        App.toast = `已更新班別模板「${name}」（${startTime}–${endTime}）。`;
+        App.storeSettings.editingShiftTplCode = null;
+      } else {
+        const code = 'CUST_' + Date.now().toString(36).toUpperCase();
+        App.storeSettings.shiftTemplates.push({ code, name, startTime, endTime, breakMins });
+        App.toast = `已新增班別模板「${name}」（${startTime}–${endTime}），排班時可直接選用！`;
+      }
+      App.storeSettings.shiftTemplateDraft = { name: '', startTime: '09:00', endTime: '17:30', breakMins: 30 };
+      syncShiftTemplatesCatalog();
+      render();
+    }
+    function startEditShiftTemplate(code) {
+      const t = (App.storeSettings.shiftTemplates || []).find(x => x.code === code);
+      if (!t) return;
+      App.storeSettings.editingShiftTplCode = code;
+      App.storeSettings.shiftTemplateDraft = { name: t.name, startTime: t.startTime, endTime: t.endTime, breakMins: t.breakMins || 0 };
+      render();
+    }
+    function deleteShiftTemplate(code) {
+      const list = App.storeSettings.shiftTemplates || [];
+      const target = list.find(x => x.code === code);
+      App.storeSettings.shiftTemplates = list.filter(x => x.code !== code);
+      if (App.storeSettings.editingShiftTplCode === code) {
+        App.storeSettings.editingShiftTplCode = null;
+        App.storeSettings.shiftTemplateDraft = { name: '', startTime: '09:00', endTime: '17:30', breakMins: 30 };
+      }
+      syncShiftTemplatesCatalog();
+      App.toast = `已刪除班別模板「${target ? target.name : code}」。`;
+      render();
+    }
     function findWsColorKey(bg) {
       return Object.keys(WS_COLOR_PALETTE).find(k => WS_COLOR_PALETTE[k].bg.toLowerCase() === String(bg || '').toLowerCase()) || 'TEAL';
     }
@@ -3797,9 +3889,10 @@ end $$;`;
             if (!emp) return '';
             const rawS = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === m.date);
             const defaultSt = Object.keys(STATIONS)[0] || '';
+            const firstWorkCode = Object.keys(SHIFT_TEMPLATES).find(k => !SHIFT_TEMPLATES[k].isOff) || 'OFF_REST';
             const s = (rawS && !(m.isNew && SHIFT_TEMPLATES[rawS.shiftCode]?.isOff))
               ? rawS
-              : { shiftCode: m.isNew ? 'MORNING' : 'OFF_REST', station: rawS?.station || defaultSt };
+              : { shiftCode: m.isNew ? firstWorkCode : 'OFF_REST', station: rawS?.station || defaultSt };
             const segs = getShiftSegments(s), curStart = segs[0] ? fmtHour(segs[0].start) : '08:30', curEnd = segs[0] ? fmtHour(segs[0].end) : '17:00';
             const stationKeys = Object.keys(STATIONS);
             return `
@@ -3814,7 +3907,10 @@ end $$;`;
                       </select>
                     </div>
                     <div>
-                      <label class="block font-semibold text-slate-700 mb-1">班別模板</label>
+                      <div class="flex items-center justify-between mb-1">
+                        <label class="font-semibold text-slate-700">班別模板</label>
+                        <button type="button" onclick="App.sched.editingShiftModal=null;App.mainTab='SETTINGS';App.storeSettings.subTab='SHIFTS';render()" class="text-[11px] text-[#0F766E] hover:underline font-semibold cursor-pointer">⚙️ 自訂班別模板</button>
+                      </div>
                       <select id="bar-edit-code" onchange="const t=SHIFT_TEMPLATES[this.value];if(t&&!t.isOff&&this.value!=='SPLIT'){document.getElementById('bar-edit-start').value=fmtHour(t.startHour);document.getElementById('bar-edit-end').value=fmtHour(t.endHour);}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold">
                         ${Object.keys(SHIFT_TEMPLATES).map(code => `<option value="${code}" ${s.shiftCode===code?'selected':''}>${SHIFT_TEMPLATES[code].name} (${SHIFT_TEMPLATES[code].timeRange})</option>`).join('')}
                       </select>
@@ -4587,6 +4683,7 @@ end $$;`;
         { k: 'BASIC', l: '基本資料與店休日' },
         { k: 'GEO', l: 'GPS 圍籬與 Wi-Fi 打卡' },
         { k: 'STATIONS', l: '工作站與最低人力' },
+        { k: 'SHIFTS', l: '班別模板設定' },
         { k: 'RBAC', l: '帳號與權限' },
       ];
 
@@ -4595,6 +4692,89 @@ end $$;`;
           <div class="inline-flex flex-wrap bg-white border border-[var(--border)] rounded-lg p-1 text-xs font-semibold gap-1">
             ${subTabs.map(t => `<button onclick="App.storeSettings.subTab='${t.k}';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${st.subTab===t.k?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${t.l}</button>`).join('')}
           </div>
+
+          ${st.subTab === 'SHIFTS' ? (() => {
+            const tpls = Array.isArray(st.shiftTemplates) ? st.shiftTemplates : [];
+            const td = st.shiftTemplateDraft || { name: '', startTime: '09:00', endTime: '17:30', breakMins: 30 };
+            const isEditingTpl = !!st.editingShiftTplCode;
+            return `
+              <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 text-xs">
+                <section class="lg:col-span-3 bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
+                  <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div>
+                      <h2 class="text-sm font-bold text-slate-900">門市自訂班別模板 (${tpls.length} 種)</h2>
+                      <p class="text-[11px] text-slate-500 mt-0.5">新增或修改後，排班時間軸的「班別模板」下拉選單會立即同步（例假日與休息日為系統固定選項）。</p>
+                    </div>
+                    <button onclick="App.mainTab='SCHED';render()" class="h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">回到排班時間軸</button>
+                  </div>
+
+                  ${tpls.length === 0 ? `
+                    <div class="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-slate-500">
+                      目前尚未建立上班班別模板，請在右側新增您門市的常用班別（例如：早班、午間 PT、晚場收班）。
+                    </div>
+                  ` : `
+                    <div class="space-y-2.5">
+                      ${tpls.map(t => {
+                        const sh = _parseTimeToHour(t.startTime);
+                        let eh = _parseTimeToHour(t.endTime);
+                        const overnight = eh <= sh;
+                        if (overnight) eh += 24;
+                        const netH = Math.max(0.5, Math.round((eh - sh - (Number(t.breakMins) || 0) / 60) * 10) / 10);
+                        return `
+                          <div class="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl border ${st.editingShiftTplCode === t.code ? 'border-[#0F766E] bg-teal-50/40' : 'border-slate-200 bg-white'}">
+                            <div class="space-y-0.5">
+                              <div class="flex items-center gap-2">
+                                <span class="font-bold text-slate-900 text-sm">${t.name}</span>
+                                ${overnight ? '<span class="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-bold">跨夜 +1</span>' : ''}
+                              </div>
+                              <div class="text-[11px] text-slate-500 mono-num">
+                                時段 ${t.startTime}–${t.endTime} · 休息 ${t.breakMins || 0} 分鐘 · 實計工時 <strong>${netH}h</strong>
+                              </div>
+                            </div>
+                            <div class="flex items-center gap-1.5 font-semibold">
+                              <button type="button" onclick="startEditShiftTemplate('${t.code}')" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">編輯</button>
+                              <button type="button" onclick="deleteShiftTemplate('${t.code}')" class="h-7 px-2.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer">刪除</button>
+                            </div>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  `}
+                </section>
+
+                <section class="lg:col-span-2 bg-white border border-[var(--border)] rounded-xl p-5 space-y-4 h-fit">
+                  <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h3 class="text-sm font-bold text-slate-900">${isEditingTpl ? '編輯班別模板' : '＋ 新增自訂班別模板'}</h3>
+                    ${isEditingTpl ? `<button type="button" onclick="App.storeSettings.editingShiftTplCode=null;App.storeSettings.shiftTemplateDraft={name:'',startTime:'09:00',endTime:'17:30',breakMins:30};render()" class="text-[11px] text-slate-500 hover:text-slate-800 cursor-pointer font-semibold">取消編輯</button>` : ''}
+                  </div>
+                  <form onsubmit="saveShiftTemplate(event)" class="space-y-3.5">
+                    <div>
+                      <label class="block font-semibold text-slate-700 mb-1">班別名稱 *</label>
+                      <input value="${td.name || ''}" oninput="App.storeSettings.shiftTemplateDraft.name=this.value" placeholder="例：早午餐開早、午間 PT、晚場收班" class="w-full h-9 px-3 rounded-lg border border-slate-200 font-semibold" />
+                    </div>
+                    <div class="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label class="block font-semibold text-slate-700 mb-1">上班時間 *</label>
+                        <input type="time" value="${td.startTime || '09:00'}" oninput="App.storeSettings.shiftTemplateDraft.startTime=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" />
+                      </div>
+                      <div>
+                        <label class="block font-semibold text-slate-700 mb-1">下班時間（可跨夜）*</label>
+                        <input type="time" value="${td.endTime || '17:30'}" oninput="App.storeSettings.shiftTemplateDraft.endTime=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" />
+                      </div>
+                    </div>
+                    <div>
+                      <label class="block font-semibold text-slate-700 mb-1">中間休息時間（分鐘）</label>
+                      <input type="number" min="0" max="240" value="${td.breakMins ?? 30}" oninput="App.storeSettings.shiftTemplateDraft.breakMins=Math.max(0,Number(this.value)||0)" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" />
+                      <p class="text-[11px] text-slate-400 mt-1">例如 8.5 小時班休 30 或 60 分鐘，短班 PT 可填 0。</p>
+                    </div>
+                    <button type="submit" class="w-full h-9 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer shadow-xs">
+                      ${isEditingTpl ? '儲存修改' : '＋ 新增班別模板'}
+                    </button>
+                  </form>
+                </section>
+              </div>
+            `;
+          })() : ''}
 
           ${st.subTab === 'BASIC' ? `
             <div class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-5 text-xs">
