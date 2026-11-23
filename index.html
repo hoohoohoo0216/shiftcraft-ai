@@ -840,6 +840,85 @@
       initCloudSync(false);
     }
 
+    function resetWorkspaceForNewBrand(brandName, storeCnt, email) {
+      const cnt = Math.max(1, Math.min(10, Number(storeCnt) || 1));
+      const cleanStores = Array.from({ length: cnt }, (_, idx) => ({
+        id: 'store-0' + (idx + 1),
+        name: idx === 0 ? `${brandName}・總店` : `${brandName}・第 ${idx + 1} 分店`,
+        city: '台灣',
+      }));
+      App.employees = [];
+      App.sched.shifts = [];
+      App.sched.editingShiftModal = null;
+      App.liff.requests = [];
+      App.liff.balances = {};
+      App.attendance.logs = [];
+      App.attendance.corrections = [];
+      App.payroll.selectedEmpId = null;
+      App.payroll.attByMonth = { '2026-11': {}, '2026-10': {}, '2026-09': {} };
+      App.payroll.dispatched = {};
+      App.payroll.signed = {};
+      App.storeSettings.activeRole = 'OWNER';
+      App.storeSettings.name = cleanStores[0].name;
+      App.storeSettings.brandName = brandName;
+      App.storeSettings.address = '';
+      App.storeSettings.wifiSsid = '';
+      App.storeSettings.admins = [
+        { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: email || '', lineBound: false, scope: '全門市', active: true },
+      ];
+      App.billing.invoices = [];
+      App.billing.cards = [];
+      App.multiStore.stores = cleanStores;
+      App.multiStore.activeStoreId = cleanStores[0].id;
+      App.multiStore.storeData = {};
+      cleanStores.forEach(meta => {
+        const snap = captureActiveStoreSnapshot();
+        snap.storeSettings.name = meta.name;
+        App.multiStore.storeData[meta.id] = snap;
+      });
+    }
+
+    async function clearCurrentBrandDemoData() {
+      if (App.auth.isDemo) {
+        App.toast = '體驗帳號無法清空示範資料，請註冊您自己的試用帳號。';
+        render();
+        return;
+      }
+      const brandName = App.auth.companyName || App.storeSettings.brandName || '我的門市';
+      const existingStores = App.multiStore.stores.length ? App.multiStore.stores : [{ id: 'store-01', name: `${brandName}・總店`, city: '台灣' }];
+      App.employees = [];
+      App.sched.shifts = [];
+      App.sched.editingShiftModal = null;
+      App.liff.requests = [];
+      App.liff.balances = {};
+      App.attendance.logs = [];
+      App.attendance.corrections = [];
+      App.payroll.selectedEmpId = null;
+      App.payroll.attByMonth = { '2026-11': {}, '2026-10': {}, '2026-09': {} };
+      App.payroll.dispatched = {};
+      App.payroll.signed = {};
+      App.storeSettings.activeRole = 'OWNER';
+      App.storeSettings.address = '';
+      App.storeSettings.wifiSsid = '';
+      App.storeSettings.admins = [
+        { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: App.auth.email || '', lineBound: false, scope: '全門市', active: true },
+      ];
+      App.billing.invoices = [];
+      App.billing.cards = [];
+      App.multiStore.storeData = {};
+      existingStores.forEach(meta => {
+        const snap = captureActiveStoreSnapshot();
+        snap.storeSettings.name = meta.name;
+        App.multiStore.storeData[meta.id] = snap;
+      });
+      App.mainTab = 'HR';
+      App.toast = '🧹 已清空所有示範員工與紀錄，現在是乾淨的空白門市，您可以直接新增自己的員工！';
+      render();
+      for (const stMeta of existingStores) {
+        await pushStoreToCloud(stMeta.id);
+      }
+    }
+
     async function submitAuthForm(e) {
       e.preventDefault();
       if (App.auth.authBusy) return;
@@ -914,20 +993,13 @@
           const { error: insErr } = await sb.from('shiftcraft_accounts').insert(newAcc);
           if (insErr) throw insErr;
 
-          App.multiStore.stores = Array.from({ length: Math.min(storeCnt, 10) }, (_, idx) => ({
-            id: 'store-0' + (idx + 1),
-            name: idx === 0 ? `${brandName}・總店` : `${brandName}・第 ${idx + 1} 分店`,
-            city: '台灣',
-          }));
-          App.multiStore.activeStoreId = 'store-01';
-          App.multiStore.storeData = {};
-          App.storeSettings.name = App.multiStore.stores[0].name;
-          App.storeSettings.brandName = brandName;
+          resetWorkspaceForNewBrand(brandName, storeCnt, email);
 
           applyAccountRecord(newAcc);
+          App.mainTab = 'HR';
           App.auth.authBusy = false;
           App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
-          App.toast = `🎉 歡迎加入班匠！「${brandName}」14 天免費試用已啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），之後用這組信箱密碼在任何裝置都能登入！`;
+          App.toast = `🎉 歡迎加入班匠！「${brandName}」全新空白門市空間已建立，14 天免費試用啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），請先新增您的第一位員工！`;
           render();
           await initCloudSync(false);
           for (const stMeta of App.multiStore.stores) {
@@ -1265,9 +1337,13 @@ end $$;`;
 
     function createBlankStoreSnapshot(storeMeta) {
       const base = captureActiveStoreSnapshot();
+      base.employees = [];
+      base.sched.shifts = [];
       base.storeSettings.name = storeMeta.name;
       if (storeMeta.city) base.storeSettings.address = storeMeta.city;
       base.liff.requests = [];
+      base.liff.balances = {};
+      base.attendance.logs = [];
       base.attendance.corrections = [];
       return base;
     }
@@ -3702,7 +3778,17 @@ end $$;`;
     // 模組 3：薪資結算與電子薪資條
     // ============================================================================
     function renderPayrollModule() {
-      const mk = App.payroll.monthKey, rules = App.payroll.rules, attMap = App.payroll.attByMonth[mk];
+      if (!App.employees || App.employees.length === 0) {
+        return `
+          <div class="max-w-lg mx-auto my-8 bg-white border border-[var(--border)] rounded-2xl p-7 text-center space-y-3">
+            <div class="text-2xl">👥</div>
+            <h3 class="text-base font-bold text-slate-900">尚未建立員工資料</h3>
+            <p class="text-xs text-slate-500">請先至「人事建檔」新增門市員工與薪資設定，系統就會自動計算每月薪資、勞健保與電子薪資條。</p>
+            <button onclick="App.mainTab='HR';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold text-xs cursor-pointer">前往人事建檔新增員工</button>
+          </div>
+        `;
+      }
+      const mk = App.payroll.monthKey, rules = App.payroll.rules, attMap = App.payroll.attByMonth[mk] || {};
       const slips = App.employees.map(e => calcPayslip(e, attMap[e.id] || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 }, mk));
       const active = slips.find(s => s.emp.id === App.payroll.selectedEmpId) || slips[0];
       const totNet = slips.reduce((a, b) => a + b.netPay, 0);
@@ -4666,6 +4752,7 @@ end $$;`;
             </div>
             <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
               ${!ent.isDemo ? `<button onclick="refreshAccountSubscription(true)" class="h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">🔄 重新檢查開通狀態</button>` : ''}
+              ${!ent.isDemo ? `<button onclick="if(confirm('確定要清空目前門市的示範員工、班表與打卡紀錄，從空白門市重新開始嗎？'))clearCurrentBrandDemoData()" class="h-8 px-3 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold cursor-pointer">🧹 清空示範資料</button>` : ''}
               <button onclick="App.billing.subTab='PLANS';render()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">變更方案 / 門市數</button>
               <button onclick="logoutToAuthScreen()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">登出</button>
             </div>
@@ -5107,6 +5194,24 @@ end $$;`;
       const mode = App.mainTab === 'ATTENDANCE' ? 'ATT' : App.mainTab === 'LIFF_LEAVE' ? 'LEAVE' : App.mainTab === 'PAYROLL' ? 'PAYROLL' : 'SCHED';
       const empId = mode === 'ATT' ? App.attendance.liffEmpId : mode === 'LEAVE' ? App.liff.empId : mode === 'PAYROLL' ? App.payroll.liffEmpId : App.sched.liffEmpId;
       const emp = App.employees.find(e => e.id === empId) || App.employees[0];
+      if (!emp) {
+        return `
+          <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="App.liffDrawerOpen=false;render()">
+            <aside class="w-full max-w-[380px] border-l border-slate-200 bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
+              <div class="bg-[#06C755] text-white p-4 flex items-center justify-between text-xs font-bold">
+                <span>LINE LIFF 員工端</span>
+                <button onclick="closeLiffWindowOrDrawer()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer">關閉</button>
+              </div>
+              <div class="p-6 text-center space-y-3 my-auto">
+                <div class="text-3xl">👥</div>
+                <div class="text-sm font-bold text-slate-900">門市尚未建立員工資料</div>
+                <p class="text-xs text-slate-500 leading-relaxed">請老闆先在「人事建檔」新增第一位員工，員工就能使用 LINE 打卡、看班表、請假與領薪資條。</p>
+                <button onclick="App.liffDrawerOpen=false;App.mainTab='HR';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] text-white font-bold text-xs cursor-pointer">前往人事建檔</button>
+              </div>
+            </aside>
+          </div>
+        `;
+      }
       const bal = ensureLeaveBalance(emp.id);
       const empTodayLog = App.attendance.logs.find(l => l.employeeId === emp.id && l.date === '2026-11-21');
       const mk = App.payroll.monthKey;
