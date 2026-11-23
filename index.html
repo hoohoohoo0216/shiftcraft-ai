@@ -4224,7 +4224,7 @@ end $$;`;
             ${[
               { k: 'ACCOUNT', l: '帳號與登入安全' },
               { k: 'PLANS', l: '月費方案與計價' },
-              { k: 'PAYMENT', l: '金流串接與付款方式' },
+              { k: 'PAYMENT', l: '付款方式' },
               { k: 'INVOICES', l: `帳單與發票 (${b.invoices.length})` },
             ].map(t => `
               <button onclick="App.billing.subTab='${t.k}';render()" class="px-3.5 py-1.5 rounded-lg cursor-pointer transition ${b.subTab===t.k?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${t.l}</button>
@@ -5794,7 +5794,7 @@ end $$;`;
       '變更方案 / 門市數': { en: 'Change Plan / Stores', ja: 'プラン・店舗数変更' },
       '帳號與登入安全': { en: 'Account & Security', ja: 'アカウント・セキュリティ' },
       '月費方案與計價': { en: 'Monthly Plans', ja: '月額プラン・料金' },
-      '金流串接與付款方式': { en: 'Payment Gateways', ja: '決済連携・支払方法' },
+      '付款方式': { en: 'Payment Methods', ja: 'お支払い方法' },
       '定期定額啟用中': { en: 'Auto-Billing Active', ja: '定期課金有効' },
       '品牌管理帳號資料': { en: 'Brand Account Profile', ja: 'ブランド管理者アカウント' },
       '帳號驗證通過': { en: 'Verified', ja: '認証済' },
