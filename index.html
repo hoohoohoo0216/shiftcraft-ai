@@ -579,7 +579,7 @@
           { id: 'sc-1', date: '2026-12-08', reason: '全店年度消毒與設備保養公休' },
           { id: 'sc-2', date: '2027-02-16', reason: '農曆除夕店休（依勞基法給薪）' },
         ],
-        newSpecialDate: '2026-11-30', newSpecialReason: '月末盤點與教育訓練公休',
+        newSpecialDate: '', newSpecialReason: '',
         lat: 25.05268, lng: 121.52036, radiusMeters: 50, wifiSsid: 'ShanBei_Nanxi_5G', wifiBssid: 'A4:2B:8C:19:4F:02', allowWifiOnly: true,
         activeRole: 'OWNER',
         permissions: {
@@ -1504,6 +1504,8 @@ end $$;`;
         App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
         if (!App.auth || !App.auth.isDemo) App.storeSettings.activeRole = 'OWNER';
         App.storeSettings.adminDraft = { name: '', title: '', role: 'STORE_MANAGER', contact: '' };
+        App.storeSettings.newSpecialDate = '';
+        App.storeSettings.newSpecialReason = '';
         if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
         if (typeof syncShiftTemplatesCatalog === 'function') syncShiftTemplatesCatalog();
       }
@@ -3215,7 +3217,7 @@ end $$;`;
       st.specialClosedDates.push({ id: 'sc-' + Date.now(), date: st.newSpecialDate, reason: (st.newSpecialReason || '').trim() || '臨時公休' });
       if (App.sched.dayConfig[st.newSpecialDate]) App.sched.dayConfig[st.newSpecialDate].isClosed = true;
       App.toast = `已新增特定店休日 ${st.newSpecialDate}。`;
-      st.newSpecialReason = ''; render();
+      st.newSpecialDate = ''; st.newSpecialReason = ''; render();
     }
     function removeSpecialClosedDate(id) {
       const st = App.storeSettings, target = st.specialClosedDates.find(x => x.id === id);
