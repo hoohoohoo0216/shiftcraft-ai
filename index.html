@@ -569,7 +569,7 @@
 
       storeSettings: {
         subTab: 'BASIC', // 'BASIC' | 'GEO' | 'STATIONS' | 'RBAC'
-        name: '山焙森茶・中山南西概念店', code: 'TW-TPE-001', taxId: '90482715',
+        name: '山焙森茶・中山南西概念店', code: '', taxId: '90482715',
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
         scheduleStartHour: 8, scheduleEndHour: 23,
         peakHours: [], peakDraft: { label: '', start: '11:30', end: '14:00' },
@@ -949,8 +949,16 @@
       App.storeSettings.activeRole = 'OWNER';
       App.storeSettings.name = cleanStores[0].name;
       App.storeSettings.brandName = brandName;
+      App.storeSettings.code = '';
+      App.storeSettings.taxId = '';
+      App.storeSettings.phone = '';
       App.storeSettings.address = '';
+      App.storeSettings.laborInsuranceUnit = '';
+      App.storeSettings.nhiInsuranceUnit = '';
       App.storeSettings.wifiSsid = '';
+      App.storeSettings.wifiBssid = '';
+      App.storeSettings.specialClosedDates = [];
+      App.storeSettings.peakHours = [];
       App.storeSettings.workstations = [];
       if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       App.storeSettings.admins = [
@@ -1502,7 +1510,10 @@ end $$;`;
       }
       if (snap.storeSettings) {
         App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
-        if (!App.auth || !App.auth.isDemo) App.storeSettings.activeRole = 'OWNER';
+        if (!App.auth || !App.auth.isDemo) {
+          App.storeSettings.activeRole = 'OWNER';
+          if (App.storeSettings.code === 'TW-TPE-001') App.storeSettings.code = '';
+        }
         App.storeSettings.adminDraft = { name: '', title: '', role: 'STORE_MANAGER', contact: '' };
         App.storeSettings.newSpecialDate = '';
         App.storeSettings.newSpecialReason = '';
@@ -5240,7 +5251,7 @@ end $$;`;
               </div>
               <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div><label class="block font-semibold text-slate-600 mb-1">門市名稱</label><input value="${st.name}" oninput="App.storeSettings.name=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 font-semibold" /></div>
-                <div><label class="block font-semibold text-slate-600 mb-1">門市代號</label><input value="${st.code}" oninput="App.storeSettings.code=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                <div><label class="block font-semibold text-slate-600 mb-1">門市代號</label><input value="${st.code||''}" placeholder="自訂門市代號（選填）" oninput="App.storeSettings.code=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                 <div><label class="block font-semibold text-slate-600 mb-1">統一編號</label><input value="${st.taxId}" oninput="App.storeSettings.taxId=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                 <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">門市地址</label><input value="${st.address}" oninput="App.storeSettings.address=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
                 <div><label class="block font-semibold text-slate-600 mb-1">聯絡電話</label><input value="${st.phone}" oninput="App.storeSettings.phone=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" /></div>
