@@ -203,31 +203,48 @@
     ];
 
     function getNextEmployeeCode(empType) {
-      const prefix = empType === 'PT' ? 'PT' : 'FT';
-      let maxNum = 0;
-      const re = new RegExp('^' + prefix + '-(\\d+)$', 'i');
-      const inspectList = (list) => {
-        if (!Array.isArray(list)) return;
-        list.forEach(e => {
-          if (!e || !e.code) return;
-          const m = String(e.code).trim().match(re);
-          if (m) {
-            const n = parseInt(m[1], 10);
-            if (!isNaN(n) && n > maxNum) maxNum = n;
-          }
-        });
-      };
+      const defaultPrefix = empType === 'PT' ? 'PT-' : 'FT-';
+      const allEmps = [];
       try {
         if (App) {
-          inspectList(App.employees);
+          if (Array.isArray(App.employees)) allEmps.push(...App.employees);
           if (App.multiStore && App.multiStore.storeData) {
-            Object.values(App.multiStore.storeData).forEach(snap => {
-              if (snap && snap.employees) inspectList(snap.employees);
+            Object.entries(App.multiStore.storeData).forEach(([sid, snap]) => {
+              if (sid === App.multiStore.activeStoreId) return;
+              if (snap && Array.isArray(snap.employees)) allEmps.push(...snap.employees);
             });
           }
         }
       } catch (e) {}
-      return `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
+
+      // 優先找「同身分別(FT/PT)」最後建檔的員工，沒有則找全店最後一位有數字結尾的員工
+      const sameType = allEmps.filter(e => e && e.code && (!empType || e.type === empType));
+      const candidates = sameType.length > 0 ? sameType : allEmps.filter(e => e && e.code);
+      let baseMatch = null;
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        const m = String(candidates[i].code).trim().match(/^(.*?)(\d+)$/);
+        if (m) { baseMatch = m; break; }
+      }
+
+      if (!baseMatch) {
+        return `${defaultPrefix}0001`;
+      }
+
+      const prefix = baseMatch[1];
+      const digitWidth = baseMatch[2].length;
+      let maxNum = parseInt(baseMatch[2], 10) || 0;
+
+      // 掃描所有相同前綴的員工，確保取最大值 + 1 不撞號
+      allEmps.forEach(e => {
+        if (!e || !e.code) return;
+        const m = String(e.code).trim().match(/^(.*?)(\d+)$/);
+        if (m && m[1].toLowerCase() === prefix.toLowerCase()) {
+          const n = parseInt(m[2], 10);
+          if (!isNaN(n) && n > maxNum) maxNum = n;
+        }
+      });
+
+      return `${prefix}${String(maxNum + 1).padStart(digitWidth, '0')}`;
     }
 
     function makeEmptyHrForm(natType = 'LOCAL') {
