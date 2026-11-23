@@ -1403,7 +1403,14 @@ end $$;`;
 
     function applyStoreSnapshot(snap, storeMeta) {
       if (!snap) return;
-      if (Array.isArray(snap.employees)) App.employees = snap.employees;
+      if (Array.isArray(snap.employees)) {
+        snap.employees.forEach(e => {
+          if (e && e.nationalityType !== 'FOREIGN' && e.roleTitle && e.roleTitle.includes('外籍')) {
+            e.roleTitle = e.type === 'PT' ? '計時夥伴' : '正職夥伴';
+          }
+        });
+        App.employees = snap.employees;
+      }
       if (snap.sched) {
         if (Array.isArray(snap.sched.shifts)) App.sched.shifts = snap.sched.shifts;
         if (snap.sched.dayConfig) App.sched.dayConfig = snap.sched.dayConfig;
