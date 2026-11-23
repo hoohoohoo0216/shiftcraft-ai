@@ -572,6 +572,7 @@
         name: '山焙森茶・中山南西概念店', code: 'TW-TPE-001', taxId: '90482715',
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
         scheduleStartHour: 8, scheduleEndHour: 23,
+        peakHours: [], peakDraft: { label: '', start: '11:30', end: '14:00' },
         laborInsuranceUnit: '01094827K', nhiInsuranceUnit: '010194827',
         weeklyClosedDays: [],
         specialClosedDates: [
@@ -2350,6 +2351,34 @@ end $$;`;
       render();
     }
 
+    function parseHourStr(hm) {
+      const parts = String(hm || '').split(':');
+      const h = parseInt(parts[0], 10);
+      const m = parseInt(parts[1] || '0', 10);
+      if (isNaN(h) || isNaN(m)) return null;
+      return h + (m / 60);
+    }
+
+    function addStorePeakHour(e) {
+      e.preventDefault();
+      if (!App.storeSettings.peakDraft) App.storeSettings.peakDraft = { label: '', start: '11:30', end: '14:00' };
+      const d = App.storeSettings.peakDraft;
+      const label = (d.label || '').trim() || '尖峰時段';
+      if (!d.start || !d.end) { App.toast = '請選擇尖峰開始與結束時間。'; render(); return; }
+      if (!Array.isArray(App.storeSettings.peakHours)) App.storeSettings.peakHours = [];
+      App.storeSettings.peakHours.push({ id: 'pk-' + Date.now(), label, start: d.start, end: d.end });
+      App.storeSettings.peakDraft.label = '';
+      App.toast = `已新增尖峰時段「${label} (${d.start}–${d.end})」，排班時間軸已即時同步。`;
+      render();
+    }
+
+    function removeStorePeakHour(id) {
+      if (!Array.isArray(App.storeSettings.peakHours)) return;
+      App.storeSettings.peakHours = App.storeSettings.peakHours.filter(p => p.id !== id);
+      App.toast = '已移除該尖峰時段標記。';
+      render();
+    }
+
     function getShiftSegments(shift) {
       if (!shift) return [];
       const tpl = SHIFT_TEMPLATES[shift.shiftCode];
@@ -3782,15 +3811,18 @@ end $$;`;
         if (ce <= cs) return null;
         return { left: ((cs - AXIS_START) / AXIS_SPAN) * 100, width: ((ce - cs) / AXIS_SPAN) * 100, label };
       };
-      // 深夜跨夜時段 (00:00-06:00, 22:00-30:00) 與餐期尖峰標記 (11:30-14:00, 17:30-20:30)
+      // 深夜跨夜時段 (00:00-06:00, 22:00-30:00) 與店鋪自訂尖峰標記
       const nightZones = [
         clipZone(0, 6, '跨夜 / 凌晨'),
         clipZone(22, 30, '跨夜'),
       ].filter(Boolean);
-      const peakZones = [
-        clipZone(11.5, 14.0, '午尖峰'),
-        clipZone(17.5, 20.5, '晚尖峰'),
-      ].filter(Boolean);
+      const peakZones = (App.storeSettings.peakHours || []).map(p => {
+        const sh = parseHourStr(p.start);
+        let eh = parseHourStr(p.end);
+        if (sh == null || eh == null) return null;
+        if (eh <= sh) eh += 24;
+        return clipZone(sh, eh, p.label || '尖峰');
+      }).filter(Boolean);
 
       const selIdx = weekDays.findIndex(f => f.date === selDate);
       const prevDtObj = _parseYmd(selDate);
@@ -5242,6 +5274,34 @@ end $$;`;
                         <button type="button" onclick="setStoreScheduleRange(14, 2)" class="h-8 px-2.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${ax.start===14&&ax.rawEnd===2?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700 hover:border-[#0F766E]'}">宵夜跨夜 (14:00–02:00)</button>
                         <button type="button" onclick="setStoreScheduleRange(0, 24)" class="h-8 px-2.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${ax.is24h?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700 hover:border-[#0F766E]'}">24 小時全天候 (00:00–24:00)</button>
                       </div>
+                    </div>
+
+                    <!-- 自訂尖峰時段標記（選填） -->
+                    <div class="pt-3 border-t border-teal-200/70 space-y-2.5">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div class="font-bold text-slate-800">尖峰時段標記（選填・依各店需求自訂）</div>
+                          <div class="text-[11px] text-slate-500 mt-0.5">各店餐期不同，預設不顯示任何尖峰標記；如需在排班時間軸上提示繁忙時段（如早尖峰、午尖峰、下午茶、晚尖峰），可自行新增。</div>
+                        </div>
+                      </div>
+                      <form onsubmit="addStorePeakHour(event)" class="flex flex-wrap items-center gap-2">
+                        <input value="${(st.peakDraft && st.peakDraft.label) || ''}" oninput="if(!App.storeSettings.peakDraft)App.storeSettings.peakDraft={label:'',start:'11:30',end:'14:00'};App.storeSettings.peakDraft.label=this.value" placeholder="標籤名稱（例：午尖峰、下午茶）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white min-w-[180px] flex-1" />
+                        <input type="time" value="${(st.peakDraft && st.peakDraft.start) || '11:30'}" onchange="if(!App.storeSettings.peakDraft)App.storeSettings.peakDraft={label:'',start:'11:30',end:'14:00'};App.storeSettings.peakDraft.start=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                        <span class="text-slate-400">–</span>
+                        <input type="time" value="${(st.peakDraft && st.peakDraft.end) || '14:00'}" onchange="if(!App.storeSettings.peakDraft)App.storeSettings.peakDraft={label:'',start:'11:30',end:'14:00'};App.storeSettings.peakDraft.end=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                        <button type="submit" class="h-8 px-3.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold cursor-pointer">＋ 新增尖峰時段</button>
+                      </form>
+                      ${(st.peakHours && st.peakHours.length > 0) ? `
+                        <div class="flex flex-wrap gap-2 pt-0.5">
+                          ${st.peakHours.map(p => `
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 font-semibold text-[11px]">
+                              <span>${p.label}</span>
+                              <span class="mono-num text-amber-700">${p.start}–${p.end}</span>
+                              <button type="button" onclick="removeStorePeakHour('${p.id}')" class="ml-0.5 text-amber-600 hover:text-rose-600 font-bold cursor-pointer">✕</button>
+                            </span>
+                          `).join('')}
+                        </div>
+                      ` : `<div class="text-[11px] text-slate-400">目前未設定尖峰時段（排班時間軸不顯示尖峰標記）</div>`}
                     </div>
                   </div>
                 `;
