@@ -2022,6 +2022,10 @@ end $$;`;
       return { issues, summaries, totalHours, totalCost, otCost, totalRev, ratio: totalRev > 0 ? ((totalCost / totalRev) * 100).toFixed(1) : null };
     }
 
+    function getEffectiveDayConfig(date) {
+      return (App.sched && App.sched.dayConfig && App.sched.dayConfig[date]) || { isClosed: false };
+    }
+
     function getDayEstimatedRevenue(date) {
       const cfg = getEffectiveDayConfig(date);
       if (cfg && cfg.isClosed) return 0;
