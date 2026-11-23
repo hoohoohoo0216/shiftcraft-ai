@@ -257,7 +257,7 @@
         passportNumber: '', passportExpiryDate: '', arcExpiryDate: '', workPermitNumber: '', workPermitExpiryDate: '',
         isTaxResident183Days: true, emergencyName: '', emergencyPhone: '',
         roleTitle: isF ? '外籍僑外生 PT・外場/內場' : '正職夥伴',
-        type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), healthCertDate: '',
+        type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), employmentStatus: 'ACTIVE', resignDate: '', healthCertDate: '',
         stations: [], canKey: !isF,
         baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: 0, posAllow: 0,
         skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: 0, perfBonus: 0,
@@ -267,6 +267,33 @@
         accountNumber: '', accountHolder: '', idFrontImg: '', idBackImg: '', workPermitImg: '', bankBookImg: '',
         color: isF ? '#0284C7' : '#0F766E'
       };
+    }
+
+    function isEmployeeResigned(emp) {
+      return Boolean(emp && emp.employmentStatus === 'RESIGNED');
+    }
+
+    function getActiveEmployees() {
+      try {
+        return (App.employees || []).filter(e => !isEmployeeResigned(e));
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function getLineEmployeeAdminRole(emp) {
+      if (!emp || isEmployeeResigned(emp)) return null;
+      try {
+        const admins = (App.storeSettings && App.storeSettings.admins) || [];
+        const empName = (emp.name || '').trim();
+        const matched = admins.find(a =>
+          a && a.active !== false && a.role && a.role !== 'STAFF' &&
+          ((a.employeeId && a.employeeId === emp.id) || (a.name && a.name.trim() === empName))
+        );
+        return matched ? matched.role : null;
+      } catch (e) {
+        return null;
+      }
     }
 
     const INITIAL_UNIFIED_EMPLOYEES = [
@@ -1124,7 +1151,7 @@
     function syncBoundLineEmployee() {
       const prof = App.lineLiff && App.lineLiff.profile;
       if (!prof || !prof.userId) return null;
-      const matched = App.employees.find(e => e.lineUserId === prof.userId);
+      const matched = App.employees.find(e => e.lineUserId === prof.userId && !isEmployeeResigned(e));
       if (matched) {
         App.attendance.liffEmpId = matched.id;
         App.liff.empId = matched.id;
@@ -1138,7 +1165,7 @@
     function bindLineUserToEmployee(empId) {
       const prof = App.lineLiff && App.lineLiff.profile;
       if (!prof || !prof.userId) return;
-      const target = App.employees.find(e => e.id === empId);
+      const target = App.employees.find(e => e.id === empId && !isEmployeeResigned(e));
       if (!target) return;
       // 清除同一 LINE 帳號原本在其他員工上的舊綁定
       App.employees.forEach(e => {
@@ -1167,7 +1194,25 @@
           delete e.linePictureUrl;
         }
       });
-      App.toast = '已解除 LINE 員工綁定，您可重新選擇身分。';
+      App.liffRole = 'STAFF';
+      App.toast = '已解除 LINE 員工綁定，請重新選擇您的姓名。';
+      render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+    }
+
+    function unbindEmployeeLineByManager(empId) {
+      const emp = App.employees.find(e => e.id === empId);
+      if (!emp || !emp.lineUserId) return;
+      if (!confirm(`確定要解除「${emp.name}（${emp.code}）」的 LINE 綁定嗎？解除後該員工下次從 LINE 開啟即可重新選擇身分。`)) return;
+      delete emp.lineUserId;
+      delete emp.lineDisplayName;
+      delete emp.linePictureUrl;
+      if (App.hr.editingId === empId && App.hr.form) {
+        delete App.hr.form.lineUserId;
+        delete App.hr.form.lineDisplayName;
+        delete App.hr.form.linePictureUrl;
+      }
+      App.toast = `已解除「${emp.name}」的 LINE 綁定，該員工可重新於 LINE 選擇身分。`;
       render();
       pushStoreToCloud(App.multiStore.activeStoreId);
     }
@@ -2556,15 +2601,40 @@ end $$;`;
       } else if (!f.roleTitle || f.roleTitle === '正職夥伴' || f.roleTitle === '計時夥伴' || f.roleTitle === '外籍正職夥伴' || f.roleTitle === '外籍計時夥伴') {
         f.roleTitle = f.type === 'PT' ? '外籍計時夥伴' : '外籍正職夥伴';
       }
+      const isResigned = f.employmentStatus === 'RESIGNED';
+      f.employmentStatus = isResigned ? 'RESIGNED' : 'ACTIVE';
+      if (isResigned) {
+        if (!f.resignDate) f.resignDate = new Date().toISOString().slice(0, 10);
+        delete f.lineUserId;
+        delete f.lineDisplayName;
+        delete f.linePictureUrl;
+      } else {
+        f.resignDate = '';
+      }
       if (App.hr.editingId) {
         const idx = App.employees.findIndex(x => x.id === App.hr.editingId);
-        if (idx >= 0) App.employees[idx] = { ...App.employees[idx], ...JSON.parse(JSON.stringify(f)) };
-        App.toast = `已更新「${f.name}」人資檔案，排班與薪資模組已同步。`;
+        if (idx >= 0) {
+          const updated = { ...App.employees[idx], ...JSON.parse(JSON.stringify(f)) };
+          if (isResigned) {
+            delete updated.lineUserId;
+            delete updated.lineDisplayName;
+            delete updated.linePictureUrl;
+            (App.storeSettings.admins || []).forEach(a => {
+              if ((a.employeeId && a.employeeId === updated.id) || (a.name && a.name.trim() === (updated.name || '').trim())) {
+                a.active = false;
+              }
+            });
+          }
+          App.employees[idx] = updated;
+        }
+        App.toast = isResigned
+          ? `已將「${f.name}」設為已離職（離職日 ${f.resignDate}），並自動解除 LINE 綁定與管理權限。`
+          : `已更新「${f.name}」人資檔案，排班與薪資模組已同步。`;
         App.hr.editingId = null;
       } else {
         const ent = getAccountEntitlement();
-        if (!ent.isDemo && App.employees.length >= ent.maxStaffPerStore) {
-          App.toast = `目前為「${ent.planName}」，單店上限 ${ent.maxStaffPerStore} 名員工；請前往「帳號與訂閱」升級方案即可新增更多員工。`;
+        if (!ent.isDemo && !isResigned && getActiveEmployees().length >= ent.maxStaffPerStore) {
+          App.toast = `目前為「${ent.planName}」，單店在職上限 ${ent.maxStaffPerStore} 名員工；請前往「帳號與訂閱」升級方案即可新增更多員工。`;
           render();
           return;
         }
@@ -2574,7 +2644,7 @@ end $$;`;
         FORECASTS.forEach(d => App.sched.shifts.push({ employeeId: newId, date: d.date, shiftCode: 'OFF_REST', station: '', aiReason: '' }));
         Object.keys(App.payroll.attByMonth).forEach(mk => {
           const mH = TAIWAN_HOLIDAYS_2026.filter(h => h.monthKey === mk).map(h => h.date);
-          App.payroll.attByMonth[mk][newId] = { regH: newEmp.type === 'FT' ? 168 : 90, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: mH[0] ? [mH[0]] : [], holidayHoursPT: mH[0] ? 7.5 : 0, sickH: 0, personalH: 0, lateM: 0, bonus: newEmp.perfBonus || 500 };
+          App.payroll.attByMonth[mk][newId] = { regH: newEmp.type === 'FT' ? 168 : 90, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: mH[0] ? [mH[0]] : [], holidayHoursPT: mH[0] ? 7.5 : 0, sickH: 0, personalH: 0, lateM: 0, bonus: Number(newEmp.perfBonus) || 0 };
         });
         App.toast = `新進員工「${newEmp.name}」建檔完成，已同步寫入排班與薪資系統。`;
       }
@@ -2725,58 +2795,13 @@ end $$;`;
 
     function getActiveLineApprover(targetDate) {
       const dateStr = targetDate || App.sched.selectedDate || '2026-11-28';
-      const admins = App.storeSettings.admins || [];
-      const mgr = admins.find(a => a.role === 'STORE_MANAGER' && a.active) || { name: '周柏霖', title: '門市店長' };
-      if (!App.storeSettings.managerOnLeave) {
-        return { isDelegated: false, name: mgr.name, roleLabel: '店長', shiftLabel: '', managerName: mgr.name, dateStr };
-      }
-
-      // 店長休假時：優先尋找當天排班值勤中的副店長 (SHIFT_LEAD)
-      const shiftLeadAdmins = admins.filter(a => a.role === 'SHIFT_LEAD' && a.active);
-      const candidates = [
-        ...shiftLeadAdmins.map(a => ({ name: a.name, emp: App.employees.find(e => e.name === a.name), isLeadAdmin: true })),
-        ...App.employees
-          .filter(e => /副店|領班/.test(e.roleTitle || '') && !shiftLeadAdmins.some(a => a.name === e.name))
-          .map(e => ({ name: e.name, emp: e, isLeadAdmin: false })),
-      ];
-
-      for (const c of candidates) {
-        if (!c.emp) continue;
-        const sh = App.sched.shifts.find(s => s.employeeId === c.emp.id && s.date === dateStr);
-        const segs = getShiftSegments(sh);
-        if (segs.length > 0) {
-          const tpl = SHIFT_TEMPLATES[sh.shiftCode];
-          const shiftLabel = tpl ? `${tpl.shortLabel} (${segs.map(g => g.label).join(' / ')})` : segs.map(g => g.label).join(' / ');
-          return {
-            isDelegated: true,
-            name: c.name,
-            roleLabel: c.isLeadAdmin ? '值班副店長代理' : '當日值班領班代理',
-            shiftLabel,
-            managerName: mgr.name,
-            dateStr,
-          };
-        }
-      }
-
-      // 若該日副店長亦排休，退回第一位在職副店長或老闆代理
-      const fallbackLead = shiftLeadAdmins[0] || admins.find(a => a.role === 'OWNER' && a.active) || mgr;
-      return {
-        isDelegated: true,
-        name: fallbackLead.name,
-        roleLabel: fallbackLead.role === 'OWNER' ? '老闆代行' : '副店長代理',
-        shiftLabel: '當日無值班副店・自動順位代理',
-        managerName: mgr.name,
-        dateStr,
-      };
-    }
-
-    function toggleManagerOnLeave() {
-      App.storeSettings.managerOnLeave = !App.storeSettings.managerOnLeave;
-      const ap = getActiveLineApprover();
-      App.toast = App.storeSettings.managerOnLeave
-        ? `店長 ${ap.managerName} 已設為休假，LINE 簽核已自動轉派給當日值班副店長「${ap.name}」代理。`
-        : `店長 ${ap.managerName} 已恢復值勤，LINE 簽核已切回由店長本人處理。`;
-      render();
+      const admins = (App.storeSettings && App.storeSettings.admins) || [];
+      const mgr = admins.find(a => a.role === 'STORE_MANAGER' && a.active !== false)
+        || admins.find(a => a.role === 'OWNER' && a.active !== false)
+        || admins.find(a => a.role === 'SHIFT_LEAD' && a.active !== false)
+        || { name: (App.auth && App.auth.ownerName) || '門市管理員', role: 'STORE_MANAGER' };
+      const roleLabel = mgr.role === 'OWNER' ? '老闆' : mgr.role === 'SHIFT_LEAD' ? '值班副店長' : '店長';
+      return { isDelegated: false, name: mgr.name, roleLabel, shiftLabel: '', managerName: mgr.name, dateStr };
     }
 
     function managerSignOff(reqId, decision, viaLine) {
@@ -3342,7 +3367,8 @@ end $$;`;
       e.preventDefault();
       const d = App.storeSettings.adminDraft;
       if (!d.name.trim()) { App.toast = '請輸入管理員姓名。'; render(); return; }
-      App.storeSettings.admins.push({ id: 'adm-' + Date.now(), name: d.name.trim(), title: d.title.trim() || '門市管理員', role: d.role, contact: d.contact.trim() || '未填寫', lineBound: false, scope: App.storeSettings.name, active: true });
+      const matchedEmp = App.employees.find(x => !isEmployeeResigned(x) && x.name.trim() === d.name.trim());
+      App.storeSettings.admins.push({ id: 'adm-' + Date.now(), employeeId: matchedEmp ? matchedEmp.id : '', name: d.name.trim(), title: d.title.trim() || '門市管理員', role: d.role, contact: d.contact.trim() || '未填寫', lineBound: Boolean(matchedEmp && matchedEmp.lineUserId), scope: App.storeSettings.name, active: true });
       App.storeSettings.adminDraft = { name: '', title: '儲備店長', role: 'STORE_MANAGER', contact: '' };
       App.toast = `已新增管理員「${d.name.trim()}」。`;
       render();
@@ -3629,7 +3655,7 @@ end $$;`;
                   }"
                 >
                   ${ICONS.smartphone}
-                  <span class="hidden sm:inline">員工 LINE LIFF 模擬</span>
+                  <span class="hidden sm:inline">員工 LINE 畫面</span>
                 </button>
               </div>
             </header>
@@ -3700,10 +3726,11 @@ end $$;`;
       const selForecast = weekDays.find(f => f.date === selDate) || weekDays[0];
       const dayCfg = getEffectiveDayConfig(selDate);
 
+      const activeEmps = getActiveEmployees();
       const dayStats = {};
       weekDays.forEach(f => {
         const isClosed = getEffectiveDayConfig(f.date).isClosed;
-        const working = isClosed ? [] : App.employees.filter(e => {
+        const working = isClosed ? [] : activeEmps.filter(e => {
           const s = App.sched.shifts.find(x => x.employeeId === e.id && x.date === f.date);
           return s && SHIFT_TEMPLATES[s.shiftCode] && !SHIFT_TEMPLATES[s.shiftCode].isOff;
         });
@@ -3736,7 +3763,7 @@ end $$;`;
       const prevDate = _fmtYmd(prevDtObj);
       const prevClosed = getEffectiveDayConfig(prevDate).isClosed;
 
-      const dayRows = App.employees.map(emp => {
+      const dayRows = activeEmps.map(emp => {
         const shift = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === selDate);
         const segments = dayCfg.isClosed ? [] : getShiftSegments(shift);
         const carrySegments = [];
@@ -3896,7 +3923,7 @@ end $$;`;
                   </span>
                 </div>
                 <div class="flex items-center gap-2.5 flex-wrap text-xs">
-                  <button onclick="if(!App.employees.length){App.toast='請先至「人事建檔」新增員工，再開始排班。';App.mainTab='HR';render();}else{App.sched.editingShiftModal={empId:App.employees[0].id,date:'${selDate}',isNew:true};render();}" class="h-7 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-bold cursor-pointer shadow-xs">
+                  <button onclick="const _ae=getActiveEmployees();if(!_ae.length){App.toast='請先至「人事建檔」新增在職員工，再開始排班。';App.mainTab='HR';render();}else{App.sched.editingShiftModal={empId:_ae[0].id,date:'${selDate}',isNew:true};render();}" class="h-7 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-bold cursor-pointer shadow-xs">
                     ＋ 新增排班
                   </button>
                   <button onclick="App.mainTab='SETTINGS';App.storeSettings.subTab='BASIC';render()" class="h-7 px-2.5 rounded-lg bg-teal-50 border border-teal-200 text-[#0F766E] hover:bg-teal-100/70 text-[11px] font-semibold mono-num cursor-pointer" title="前往店鋪基本資料調整可排班時間">
@@ -4042,9 +4069,9 @@ end $$;`;
                       </tr>
                     </thead>
                     <tbody>
-                      ${App.employees.length === 0 ? `
-                        <tr><td colspan="${mInfo.days.length + 1}" class="p-8 text-center text-slate-400">尚未建立員工資料，請先至「人事建檔」新增員工。</td></tr>
-                      ` : App.employees.map(emp => {
+                      ${activeEmps.length === 0 ? `
+                        <tr><td colspan="${mInfo.days.length + 1}" class="p-8 text-center text-slate-400">尚無在職員工資料，請先至「人事建檔」新增員工。</td></tr>
+                      ` : activeEmps.map(emp => {
                         const monthHours = mInfo.days.reduce((acc, d) => {
                           if (getEffectiveDayConfig(d.date).isClosed) return acc;
                           const s = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === d.date);
@@ -4096,7 +4123,7 @@ end $$;`;
                     </tr>
                   </thead>
                   <tbody>
-                    ${App.employees.map(emp => {
+                    ${activeEmps.map(emp => {
                       const sum = ev.summaries[emp.id] || { hours: 0 };
                       return `
                         <tr class="border-b border-slate-100 last:border-b-0">
@@ -4127,7 +4154,7 @@ end $$;`;
 
           <!-- 調整 / 新增班次 Modal -->
           ${App.sched.editingShiftModal ? (() => {
-            const m = App.sched.editingShiftModal, emp = App.employees.find(e => e.id === m.empId) || App.employees[0];
+            const m = App.sched.editingShiftModal, emp = activeEmps.find(e => e.id === m.empId) || activeEmps[0];
             if (!emp) return '';
             const rawS = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === m.date);
             const defaultSt = Object.keys(STATIONS)[0] || '';
@@ -4145,7 +4172,7 @@ end $$;`;
                     <div>
                       <label class="block font-semibold text-slate-700 mb-1">選擇員工</label>
                       <select onchange="App.sched.editingShiftModal={empId:this.value,date:'${m.date}',isNew:${!!m.isNew}};render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold">
-                        ${App.employees.map(e => `<option value="${e.id}" ${e.id===emp.id?'selected':''}>${e.name}（${e.code} · ${e.type}）</option>`).join('')}
+                        ${activeEmps.map(e => `<option value="${e.id}" ${e.id===emp.id?'selected':''}>${e.name}（${e.code} · ${e.type}）</option>`).join('')}
                       </select>
                     </div>
                     <div>
@@ -4223,7 +4250,12 @@ end $$;`;
             { key: 'ID_BACK', title: '2. 國民身分證反面', img: f.idBackImg },
             { key: 'BANK_PASSBOOK', title: '3. 台灣薪轉存摺封面', img: f.bankBookImg },
           ];
-      const filteredRoster = App.employees.filter(e => App.hr.rosterFilter === 'ALL' ? true : e.nationalityType === App.hr.rosterFilter);
+      const filteredRoster = App.employees.filter(e => {
+        if (App.hr.rosterFilter === 'ACTIVE') return !isEmployeeResigned(e);
+        if (App.hr.rosterFilter === 'RESIGNED') return isEmployeeResigned(e);
+        if (App.hr.rosterFilter === 'LOCAL' || App.hr.rosterFilter === 'FOREIGN') return e.nationalityType === App.hr.rosterFilter;
+        return true;
+      });
 
       if (!canAccessSensitivePii()) {
         return `
@@ -4290,7 +4322,32 @@ end $$;`;
                     <div><label class="block font-semibold text-slate-600 mb-1">中文姓名 *</label><input value="${f.name}" oninput="App.hr.form.name=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">出生年月日（民國）</label><input type="text" value="${f.birthDate||''}" placeholder="例：085/05/12" oninput="App.hr.form.birthDate=this.value" onblur="const norm=parseTaiwanBirthDate(this.value);if(norm){App.hr.form.birthDate=norm;render();}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">到職日 *</label><input type="date" value="${f.hireDate||''}" onchange="App.hr.form.hireDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                    <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    <div>
+                      <label class="block font-semibold text-slate-600 mb-1">任職狀態</label>
+                      <select onchange="App.hr.form.employmentStatus=this.value;if(this.value==='RESIGNED'&&!App.hr.form.resignDate)App.hr.form.resignDate=new Date().toISOString().slice(0,10);if(this.value!=='RESIGNED')App.hr.form.resignDate='';render()" class="w-full h-9 px-2.5 rounded-lg border ${(f.employmentStatus==='RESIGNED')?'border-rose-300 bg-rose-50/50 text-rose-800':'border-slate-200'} font-semibold">
+                        <option value="ACTIVE" ${(f.employmentStatus||'ACTIVE')!=='RESIGNED'?'selected':''}>在職中</option>
+                        <option value="RESIGNED" ${f.employmentStatus==='RESIGNED'?'selected':''}>已離職</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block font-semibold text-slate-600 mb-1">${f.employmentStatus==='RESIGNED' ? '離職日期 *' : '供膳體檢日'}</label>
+                      ${f.employmentStatus==='RESIGNED'
+                        ? `<input type="date" value="${f.resignDate||''}" onchange="App.hr.form.resignDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-rose-300 bg-rose-50/40 mono-num font-semibold text-rose-900" />`
+                        : `<input type="date" value="${f.healthCertDate||''}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" />`
+                      }
+                    </div>
+                    ${f.employmentStatus==='RESIGNED' ? `
+                      <div class="col-span-2 rounded-lg bg-rose-50 border border-rose-200 px-3 py-2 text-[11px] text-rose-800 leading-relaxed">
+                        設為「已離職」並儲存後，系統會<strong>自動解除該員工的 LINE 綁定、停用管理權限，並不再生產於排班表</strong>；歷史人資與薪資紀錄仍會保留供日後查核。
+                      </div>
+                      <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate||''}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    ` : ''}
+                    ${App.hr.editingId && f.lineUserId ? `
+                      <div class="col-span-2 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                        <span class="text-emerald-900 font-semibold">🟢 已綁定 LINE 帳號${f.lineDisplayName ? `（${f.lineDisplayName}）` : ''}</span>
+                        <button type="button" onclick="unbindEmployeeLineByManager('${App.hr.editingId}')" class="px-2.5 py-1 rounded-md border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-bold cursor-pointer shrink-0">解除 LINE 綁定</button>
+                      </div>
+                    ` : ''}
                     ${isF ? `
                       <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">外籍聘僱類別</label><select onchange="App.hr.form.foreignStatusType=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold">${FOREIGN_STATUSES.map(o=>`<option value="${o.code}" ${f.foreignStatusType===o.code?'selected':''}>${o.label}</option>`).join('')}</select></div>
                       <div><label class="block font-semibold text-slate-600 mb-1">居留證效期 (ARC)</label><input type="date" value="${f.arcExpiryDate||''}" oninput="App.hr.form.arcExpiryDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
@@ -4405,32 +4462,54 @@ end $$;`;
           ` : `
             <!-- 員工名冊 -->
             <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
-              <div class="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-2 text-xs">
+              <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span class="font-bold text-slate-800">已建檔員工名冊 (${filteredRoster.length} 人)</span>
-                <div class="flex gap-1">
+                <div class="flex flex-wrap gap-1">
                   <button onclick="App.hr.rosterFilter='ALL';render()" class="px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${App.hr.rosterFilter==='ALL'?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200'}">全部</button>
+                  <button onclick="App.hr.rosterFilter='ACTIVE';render()" class="px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${App.hr.rosterFilter==='ACTIVE'?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200'}">在職中</button>
+                  <button onclick="App.hr.rosterFilter='RESIGNED';render()" class="px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${App.hr.rosterFilter==='RESIGNED'?'bg-rose-600 text-white border-rose-600':'bg-white border-slate-200'}">已離職</button>
                   <button onclick="App.hr.rosterFilter='LOCAL';render()" class="px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${App.hr.rosterFilter==='LOCAL'?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200'}">本國籍</button>
                   <button onclick="App.hr.rosterFilter='FOREIGN';render()" class="px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${App.hr.rosterFilter==='FOREIGN'?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200'}">外籍員工</button>
                 </div>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full border-collapse text-left min-w-[820px] text-xs">
+                <table class="w-full border-collapse text-left min-w-[860px] text-xs">
                   <thead>
                     <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
-                      <th class="p-3">姓名 / 電話</th><th class="p-3">職稱 / 聘僱別</th><th class="p-3">到職日</th><th class="p-3">勞保 / 健保級距</th><th class="p-3">薪轉帳戶</th><th class="p-3 text-right">操作</th>
+                      <th class="p-3">姓名 / 電話</th><th class="p-3">職稱 / 聘僱別</th><th class="p-3">到職 / 離職狀態</th><th class="p-3">LINE 綁定</th><th class="p-3">勞保 / 健保級距</th><th class="p-3">薪轉帳戶</th><th class="p-3 text-right">操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${filteredRoster.map(e => `
-                      <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
-                        <td class="p-3"><div class="font-bold text-slate-900">${e.name} <span class="text-[11px] font-normal text-slate-500">${e.nationality}</span></div><div class="text-[11px] text-slate-500 mono-num">${e.code} · ${e.phone||''}</div></td>
+                    ${filteredRoster.map(e => {
+                      const resigned = isEmployeeResigned(e);
+                      return `
+                      <tr class="border-b border-slate-100 last:border-b-0 ${resigned ? 'bg-slate-50/70 opacity-75' : 'hover:bg-slate-50'}">
+                        <td class="p-3">
+                          <div class="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                            <span>${e.name}</span>
+                            ${resigned ? `<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px] font-bold">已離職</span>` : ''}
+                            <span class="text-[11px] font-normal text-slate-500">${e.nationality}</span>
+                          </div>
+                          <div class="text-[11px] text-slate-500 mono-num">${e.code} · ${e.phone||''}</div>
+                        </td>
                         <td class="p-3"><div class="font-semibold text-slate-800">${e.roleTitle}</div><span class="text-[10px] px-1.5 py-0.5 rounded font-semibold ${e.type==='FT'?'bg-teal-50 text-teal-700':'bg-amber-50 text-amber-700'}">${e.type}</span></td>
-                        <td class="p-3 mono-num text-slate-700">${e.hireDate || '未填'}</td>
+                        <td class="p-3 mono-num text-slate-700">
+                          <div>到職 ${e.hireDate || '未填'}</div>
+                          ${resigned ? `<div class="text-[11px] text-rose-600 font-semibold">離職 ${e.resignDate || '未填'}</div>` : `<div class="text-[10px] text-emerald-700 font-semibold">在職中</div>`}
+                        </td>
+                        <td class="p-3">
+                          ${e.lineUserId ? `
+                            <div class="flex flex-col items-start gap-1">
+                              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-bold">🟢 ${e.lineDisplayName || '已綁定'}</span>
+                              <button type="button" onclick="unbindEmployeeLineByManager('${e.id}')" class="text-[10px] text-rose-600 hover:underline font-semibold cursor-pointer">解除綁定</button>
+                            </div>
+                          ` : `<span class="text-[11px] text-slate-400">未綁定</span>`}
+                        </td>
                         <td class="p-3 mono-num text-[11px]"><div class="font-semibold text-slate-800">勞 $${(e.laborBracket||e.bracket||28590).toLocaleString()}</div><div class="text-slate-500">健 $${(e.nhiBracket||e.bracket||28590).toLocaleString()}</div></td>
                         <td class="p-3 mono-num text-slate-600">${e.bankCode} ${e.bankName}</td>
                         <td class="p-3 text-right"><button onclick="startEditHr('${e.id}')" class="px-3 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">編輯資料</button></td>
                       </tr>
-                    `).join('')}
+                    `; }).join('')}
                   </tbody>
                 </table>
               </div>
@@ -4733,9 +4812,6 @@ end $$;`;
                 <p class="text-xs text-slate-500 mt-0.5">核准後自動扣除假別餘額、更新排班時間軸與薪資結算</p>
               </div>
               <div class="flex items-center gap-1.5 flex-wrap text-xs font-semibold">
-                <button onclick="toggleManagerOnLeave()" class="px-3 py-1.5 rounded-lg border cursor-pointer font-bold ${activeAp.isDelegated ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}">
-                  ${activeAp.isDelegated ? `店長休假中（${activeAp.name} 代理）` : '店長休假轉副店長簽'}
-                </button>
                 <button onclick="openLineManagerApproval('LEAVE')" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">
                   ${ICONS.smartphone} 開啟 LINE 店長簽核
                 </button>
@@ -4744,12 +4820,6 @@ end $$;`;
                 `).join('')}
               </div>
             </div>
-            ${activeAp.isDelegated ? `
-              <div class="rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
-                <span>店長 <strong>${activeAp.managerName}</strong> 休假中 → 系統已自動將 LINE 簽核轉派給當日值班副店長 <strong>${activeAp.name}</strong>${activeAp.shiftLabel ? `（${activeAp.shiftLabel}）` : ''}</span>
-                <button onclick="toggleManagerOnLeave()" class="underline font-bold text-amber-800 cursor-pointer">恢復店長值勤</button>
-              </div>
-            ` : ''}
 
             <div class="space-y-3">
               ${filteredMgrReqs.map(req => {
@@ -5836,23 +5906,12 @@ end $$;`;
             ${totalPending > 0 ? `<button onclick="approveAllPendingViaLine()" class="px-2.5 py-1 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-[11px] font-bold cursor-pointer">一鍵全核准 (${totalPending})</button>` : ''}
           </div>
 
-          <!-- 目前簽核人與店長休假自動轉派卡 -->
-          <div class="rounded-lg p-2.5 border ${ap.isDelegated ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'} space-y-1.5">
-            <div class="flex items-center justify-between gap-2">
-              <div class="text-[11px] font-bold ${ap.isDelegated ? 'text-amber-900' : 'text-slate-800'}">
-                目前簽核人：${ap.name} <span class="font-semibold ${ap.isDelegated ? 'text-amber-700' : 'text-[#0F766E]'}">(${ap.roleLabel})</span>
-              </div>
-              <button onclick="toggleManagerOnLeave()" class="px-2 py-0.5 rounded-md text-[10px] font-bold cursor-pointer ${ap.isDelegated ? 'bg-amber-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}">
-                ${ap.isDelegated ? '恢復店長值勤' : '模擬店長休假'}
-              </button>
+          <!-- 目前簽核人 -->
+          <div class="rounded-lg p-2.5 border bg-white border-slate-200 flex items-center justify-between gap-2">
+            <div class="text-[11px] font-bold text-slate-800">
+              目前簽核人：${ap.name} <span class="font-semibold text-[#0F766E]">(${ap.roleLabel})</span>
             </div>
-            ${ap.isDelegated ? `
-              <div class="text-[10px] text-amber-800 leading-relaxed">
-                店長 ${ap.managerName} 休假中 → 已自動轉派 ${ap.dateStr.slice(5)} 值班副店長 <strong>${ap.name}</strong> 代理簽核${ap.shiftLabel ? `（${ap.shiftLabel}）` : ''}
-              </div>
-            ` : `
-              <div class="text-[10px] text-slate-500">店長值勤中；若店長休假，系統將自動轉給當日值班副店長於 LINE 代理簽核</div>
-            `}
+            <span class="text-[10px] text-slate-400 font-medium">即時同步後台</span>
           </div>
 
           <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
@@ -5971,17 +6030,15 @@ end $$;`;
       const empAtt = (App.payroll.attByMonth[mk] && App.payroll.attByMonth[mk][emp.id]) || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 };
       const slip = mode === 'PAYROLL' ? calcPayslip(emp, empAtt, mk) : null;
       const slipSignedAt = App.payroll.signed[mk + '_' + emp.id];
-      const canLineApprove = hasRolePerm('approveLeave') || hasRolePerm('approvePunch');
-      const isMgr = canLineApprove && App.liffRole === 'MANAGER';
-      const isStaffOnly = App.storeSettings.activeRole === 'STAFF';
-      const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
       const lineProf = App.lineLiff && App.lineLiff.profile;
       const isInLineApp = Boolean(App.lineLiff && App.lineLiff.inClient);
-      const boundEmp = (lineProf && lineProf.userId) ? App.employees.find(e => e.lineUserId === lineProf.userId) : null;
+      const isRealLineUser = Boolean(lineProf && lineProf.userId);
+      const activeEmps = getActiveEmployees();
+      const boundEmp = isRealLineUser ? App.employees.find(e => e.lineUserId === lineProf.userId && !isEmployeeResigned(e)) : null;
 
-      // 首次開啟 LINE 尚未綁定員工身分時：只顯示「未綁定員工清單」，不露出任何其他員工的班表或薪資
-      if (lineProf && lineProf.userId && !boundEmp) {
-        const unboundEmps = App.employees.filter(e => !e.lineUserId);
+      // 首次開啟 LINE 尚未綁定員工身分時：只顯示「未綁定在職員工清單」，不露出任何其他員工的班表或薪資
+      if (isRealLineUser && !boundEmp) {
+        const unboundEmps = activeEmps.filter(e => !e.lineUserId);
         return `
           <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
             <aside class="w-full ${isInLineApp ? 'max-w-none' : 'max-w-[380px] border-l border-slate-200'} bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
@@ -6010,11 +6067,11 @@ end $$;`;
                   ${unboundEmps.length === 0 ? `
                     <div class="rounded-xl bg-amber-50 border border-amber-200 p-4 text-center space-y-1.5">
                       <div class="font-bold text-amber-900">目前沒有可綁定的未綁定員工</div>
-                      <p class="text-[11px] text-amber-800">門市所有員工皆已完成 LINE 綁定，或尚未建檔。請聯繫店長協助確認。</p>
+                      <p class="text-[11px] text-amber-800">門市所有在職員工皆已完成 LINE 綁定，或尚未建檔。請聯繫店長協助確認。</p>
                     </div>
                   ` : `
                     <div class="space-y-2 pt-1">
-                      <div class="text-[11px] font-semibold text-slate-500">尚未綁定的門市員工（${unboundEmps.length} 位）</div>
+                      <div class="text-[11px] font-semibold text-slate-500">尚未綁定的在職員工（${unboundEmps.length} 位）</div>
                       ${unboundEmps.map(e => `
                         <button
                           type="button"
@@ -6037,6 +6094,15 @@ end $$;`;
         `;
       }
 
+      const boundAdminRole = isRealLineUser ? getLineEmployeeAdminRole(boundEmp) : null;
+      const hasBackendAccess = isRealLineUser ? Boolean(boundAdminRole) : false;
+      const canLineApprove = isRealLineUser
+        ? (boundAdminRole === 'OWNER' || boundAdminRole === 'STORE_MANAGER' || boundAdminRole === 'SHIFT_LEAD')
+        : (hasRolePerm('approveLeave') || hasRolePerm('approvePunch'));
+      const isMgr = canLineApprove && App.liffRole === 'MANAGER';
+      const isStaffOnly = isRealLineUser ? !canLineApprove : (App.storeSettings.activeRole === 'STAFF');
+      const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
+
       return `
         <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
           <aside class="w-full ${isInLineApp ? 'max-w-none' : 'max-w-[380px] border-l border-slate-200'} bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
@@ -6045,16 +6111,16 @@ end $$;`;
                 <div class="flex items-center gap-2 min-w-0">
                   ${lineProf && lineProf.pictureUrl ? `<img src="${lineProf.pictureUrl}" class="w-7 h-7 rounded-full border border-white/60 shrink-0 object-cover" />` : ''}
                   <div class="min-w-0">
-                    <div class="font-bold truncate">${lineProf ? `${lineProf.displayName} · 班匠 LINE` : (isMgr ? 'LINE 店長簽核模擬器' : 'LINE LIFF 員工端模擬器')}</div>
+                    <div class="font-bold truncate">${lineProf ? `${lineProf.displayName} · 班匠 LINE` : (isMgr ? 'LINE 店長簽核' : 'LINE 員工端')}</div>
                     ${lineProf ? `<div class="text-[10px] text-white/85">${App.cloud.status === 'SYNCED' ? '🟢 雲端同步中' : 'LINE LIFF 已連線'} · ${App.storeSettings.name}</div>` : ''}
                   </div>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
-                  ${isInLineApp ? `<button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">後台版</button>` : ''}
+                  ${isInLineApp && hasBackendAccess ? `<button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">後台版</button>` : ''}
                   <button onclick="closeLiffWindowOrDrawer()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
                 </div>
               </div>
-              ${App.multiStore.stores.length > 1 ? `
+              ${App.multiStore.stores.length > 1 && (!isRealLineUser || hasBackendAccess) ? `
                 <select
                   onchange="switchActiveStore(this.value)"
                   class="w-full h-7 px-2.5 rounded-lg bg-black/15 border border-white/25 text-white text-[11px] font-bold cursor-pointer"
@@ -6076,29 +6142,17 @@ end $$;`;
                   onchange="const v=this.value;if('${mode}'==='ATT')App.attendance.liffEmpId=v;else if('${mode}'==='LEAVE')App.liff.empId=v;else if('${mode}'==='PAYROLL'){App.payroll.liffEmpId=v;App.payroll.selectedEmpId=v;}else App.sched.liffEmpId=v;render()"
                   class="w-full h-8 px-2.5 rounded-lg bg-black/20 border border-white/30 text-white text-xs font-bold cursor-pointer"
                 >
-                  ${App.employees.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
+                  ${activeEmps.map(e => `<option value="${e.id}" class="text-slate-900 bg-white" ${e.id===emp.id?'selected':''}>切換員工：${e.name} (${e.type})</option>`).join('')}
                 </select>
               ` : (!isMgr ? `
                 <div class="px-2.5 py-1.5 rounded-lg bg-black/15 text-[11px] font-bold flex items-center justify-between gap-2">
-                  <span class="truncate">${boundEmp ? `✅ 已綁定員工：${boundEmp.name} (${boundEmp.code})` : `登入員工：${lineProf ? lineProf.displayName : emp.name} (${emp.code})`}</span>
-                  ${boundEmp ? `<button onclick="unbindLineUser()" class="shrink-0 underline text-white/85 hover:text-white cursor-pointer text-[10px]">重綁</button>` : ''}
+                  <span class="truncate">${boundEmp ? `✅ 已綁定：${boundEmp.name} (${boundEmp.code})` : `登入員工：${lineProf ? lineProf.displayName : emp.name} (${emp.code})`}</span>
+                  ${boundEmp ? `<button onclick="if(confirm('確定要解除目前的 LINE 綁定並重新選擇姓名嗎？'))unbindLineUser()" class="shrink-0 px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 text-white cursor-pointer text-[10px]">綁錯人？重綁</button>` : ''}
                 </div>
               ` : '')}
             </div>
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
-              ${!isMgr && lineProf && lineProf.userId && !boundEmp ? `
-                <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
-                  <div class="font-bold text-emerald-900">👋 首次使用：一鍵綁定您的員工身分</div>
-                  <div class="text-[11px] text-emerald-800">綁定後，下次從 LINE 點開將自動帶入您的個人班表、打卡與薪資條。</div>
-                  <div class="flex gap-1.5">
-                    <select id="line-bind-emp-select" class="flex-1 h-8 px-2 rounded-lg border border-emerald-300 bg-white text-slate-800 text-xs font-semibold">
-                      ${App.employees.map(e => `<option value="${e.id}" ${e.id===emp.id?'selected':''}>${e.name} (${e.code} · ${e.roleTitle || e.type})</option>`).join('')}
-                    </select>
-                    <button onclick="bindLineUserToEmployee(document.getElementById('line-bind-emp-select').value)" class="px-3 h-8 rounded-lg bg-[#06C755] text-white font-bold cursor-pointer shrink-0">確認綁定</button>
-                  </div>
-                </div>
-              ` : ''}
               ${isMgr ? renderLineManagerApprovalContent() : `
               ${mode === 'PAYROLL' && slip ? `
                 <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
