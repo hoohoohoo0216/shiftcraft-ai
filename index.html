@@ -357,6 +357,7 @@
         addingBranch: false,
         newBranchName: '',
         newBranchCity: '',
+        qrModalOpen: false,
       },
       cloud: {
         url: '',
@@ -708,10 +709,14 @@
       pushStoreToCloud(App.multiStore.activeStoreId);
     }
 
-    function copyStoreLineInviteLink() {
+    function getStoreLineInviteLink() {
       const brandId = encodeURIComponent(App.multiStore.brandId || 'brand-shiftcraft-demo');
       const storeId = encodeURIComponent(App.multiStore.activeStoreId || 'store-01');
-      const link = `https://liff.line.me/${App.lineLiff.liffId}?brand=${brandId}&store=${storeId}`;
+      return `https://liff.line.me/${App.lineLiff.liffId}?brand=${brandId}&store=${storeId}`;
+    }
+
+    function copyStoreLineInviteLink() {
+      const link = getStoreLineInviteLink();
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(link).then(() => {
           App.toast = `已複製「${App.storeSettings.name}」專屬 LINE 員工連結！傳到門市群組即可使用。`;
@@ -720,6 +725,79 @@
       } else {
         window.prompt('請複製此門市專屬 LINE 員工連結：', link);
       }
+    }
+
+    function printStoreQrPoster() {
+      const link = getStoreLineInviteLink();
+      const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=420x420&margin=12&data=${encodeURIComponent(link)}`;
+      const storeName = App.storeSettings.name || '班匠門市';
+      const w = window.open('', '_blank', 'width=640,height=840');
+      if (!w) { App.toast = '請允許彈出視窗以列印海報，或直接對 QR Code 按右鍵另存圖片。'; render(); return; }
+      w.document.write(`<!DOCTYPE html><html lang="zh-Hant-TW"><head><meta charset="UTF-8"><title>${storeName} - 員工 LINE 綁定 QR Code</title>
+        <style>
+          body{margin:0;padding:36px;font-family:-apple-system,BlinkMacSystemFont,"Noto Sans TC","Microsoft JhengHei",sans-serif;background:#fff;color:#0f172a;display:flex;justify-content:center;}
+          .card{width:100%;max-width:480px;border:3px solid #0F766E;border-radius:24px;overflow:hidden;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.06);}
+          .top{background:#0F766E;color:#fff;padding:24px 20px;}
+          .badge{display:inline-block;background:rgba(255,255,255,.18);padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;}
+          .store{font-size:24px;font-weight:800;margin:10px 0 4px;}
+          .sub{font-size:13px;opacity:.9;}
+          .body{padding:28px 24px;}
+          .qr{width:280px;height:280px;border:1px solid #e2e8f0;border-radius:16px;padding:10px;background:#fff;}
+          .steps{margin-top:20px;text-align:left;background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:14px 18px;font-size:14px;line-height:1.8;}
+          .foot{margin-top:16px;font-size:11px;color:#64748b;}
+        </style></head><body>
+        <div class="card">
+          <div class="top">
+            <div class="badge">班匠 ShiftCraft · 員工專屬系統</div>
+            <div class="store">${storeName}</div>
+            <div class="sub">手機掃描即可看班表、打卡、請假、查薪資條</div>
+          </div>
+          <div class="body">
+            <img class="qr" src="${qrSrc}" onload="setTimeout(function(){window.print();},250)" />
+            <div class="steps">
+              <div><strong>①</strong> 打開手機 <strong>LINE</strong> 或相機掃描上方 QR Code</div>
+              <div><strong>②</strong> 首次開啟請選擇自己的名字按「<strong>確認綁定</strong>」</div>
+              <div><strong>③</strong> 以後點選單即可一鍵 <strong>上下班打卡 / 看班表 / 請假 / 領薪資條</strong></div>
+            </div>
+            <div class="foot">請張貼於門市員工休息室或打卡區 · 班匠 ShiftCraft AI</div>
+          </div>
+        </div>
+      </body></html>`);
+      w.document.close();
+    }
+
+    function renderStoreQrModal() {
+      const link = getStoreLineInviteLink();
+      const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=12&data=${encodeURIComponent(link)}`;
+      return `
+        <div class="no-print fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4" onclick="App.multiStore.qrModalOpen=false;render()">
+          <div class="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden" onclick="event.stopPropagation()">
+            <div class="px-5 py-4 bg-[#0F766E] text-white flex items-center justify-between">
+              <div>
+                <div class="text-sm font-bold">🔳 門市員工專屬 LINE QR Code</div>
+                <div class="text-[11px] text-teal-100 mt-0.5">${App.storeSettings.name}</div>
+              </div>
+              <button onclick="App.multiStore.qrModalOpen=false;render()" class="px-2 py-1 rounded bg-white/15 hover:bg-white/25 text-xs font-bold cursor-pointer">關閉</button>
+            </div>
+            <div class="p-5 flex flex-col items-center text-center space-y-4">
+              <div class="p-3 bg-white rounded-2xl border-2 border-teal-100 shadow-xs">
+                <img src="${qrSrc}" alt="門市員工 LINE QR Code" class="w-56 h-56 rounded-lg object-contain" />
+              </div>
+              <div class="w-full rounded-xl bg-slate-50 border border-slate-200 p-3 text-left text-xs text-slate-700 space-y-1">
+                <div class="font-bold text-slate-900 mb-1">新員工報到 30 秒開通步驟：</div>
+                <div>1. 用手機 LINE 或相機掃描上方 QR Code</div>
+                <div>2. 選擇自己的名字按「確認綁定」</div>
+                <div>3. 立刻使用線上打卡、看班表、請假與電子薪資條</div>
+              </div>
+              <div class="w-full text-[10px] text-slate-400 mono-num break-all px-2">${link}</div>
+              <div class="w-full grid grid-cols-2 gap-2.5 pt-1">
+                <button onclick="copyStoreLineInviteLink()" class="h-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold cursor-pointer">📋 複製連結</button>
+                <button onclick="printStoreQrPoster()" class="h-10 rounded-xl bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-bold cursor-pointer shadow-xs">🖨️ 列印張貼海報</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     function loginWithLine() {
@@ -2417,9 +2495,14 @@ end $$;`;
                     <span class="text-emerald-600 font-medium">營業中</span>
                   </div>
                   ${hasRolePerm('settingsAdmin') ? `
-                    <button onclick="copyStoreLineInviteLink()" class="w-full mt-1 py-1.5 px-2 rounded-md bg-white border border-slate-200 hover:border-[#06C755] hover:text-[#059643] text-[11px] font-semibold text-slate-600 transition cursor-pointer flex items-center justify-center gap-1">
-                      <span>📲 複製門市 LINE 員工連結</span>
-                    </button>
+                    <div class="grid grid-cols-2 gap-1.5 mt-1">
+                      <button onclick="copyStoreLineInviteLink()" class="py-1.5 px-1.5 rounded-md bg-white border border-slate-200 hover:border-[#06C755] hover:text-[#059643] text-[11px] font-semibold text-slate-600 transition cursor-pointer flex items-center justify-center gap-1">
+                        <span>📲 員工連結</span>
+                      </button>
+                      <button onclick="App.multiStore.qrModalOpen=true;render()" class="py-1.5 px-1.5 rounded-md bg-[#0F766E] hover:bg-[#115E59] text-white text-[11px] font-semibold transition cursor-pointer flex items-center justify-center gap-1">
+                        <span>🔳 QR Code</span>
+                      </button>
+                    </div>
                   ` : ''}
                 `}
               </div>
@@ -2547,6 +2630,9 @@ end $$;`;
 
         <!-- 雲端多店同步設定彈窗 -->
         ${App.cloud.modalOpen ? renderCloudModal() : ''}
+
+        <!-- 門市員工專屬 LINE QR Code 彈窗 -->
+        ${App.multiStore.qrModalOpen ? renderStoreQrModal() : ''}
 
         <!-- 右下角浮動 Toast -->
         ${App.toast ? `
