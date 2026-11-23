@@ -202,20 +202,47 @@
       { code: 'FLEX_CUSTOM', short: '自由彈性', label: '自由彈性工時（任意排班時段）', desc: '排班表開放自由輸入任意上下班時間' },
     ];
 
-    function makeEmptyHrForm(natType = 'FOREIGN') {
+    function getNextEmployeeCode(empType) {
+      const prefix = empType === 'PT' ? 'PT' : 'FT';
+      let maxNum = 0;
+      const re = new RegExp('^' + prefix + '-(\\d+)$', 'i');
+      const inspectList = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach(e => {
+          if (!e || !e.code) return;
+          const m = String(e.code).trim().match(re);
+          if (m) {
+            const n = parseInt(m[1], 10);
+            if (!isNaN(n) && n > maxNum) maxNum = n;
+          }
+        });
+      };
+      if (typeof App !== 'undefined' && App) {
+        inspectList(App.employees);
+        if (App.multiStore && App.multiStore.storeData) {
+          Object.values(App.multiStore.storeData).forEach(snap => {
+            if (snap && snap.employees) inspectList(snap.employees);
+          });
+        }
+      }
+      return `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
+    }
+
+    function makeEmptyHrForm(natType = 'LOCAL') {
       const isF = natType === 'FOREIGN';
+      const empType = isF ? 'PT' : 'FT';
       return {
-        code: isF ? 'PT-106' : 'FT-005', nationalityType: natType, nationality: isF ? '越南 (Vietnam)' : '中華民國 (台灣)',
+        code: getNextEmployeeCode(empType), nationalityType: natType, nationality: isF ? '越南 (Vietnam)' : '中華民國 (台灣)',
         foreignStatusType: 'STUDENT_PT', name: '', passportEnglishName: '', nationalId: '', gender: isF ? '女' : '男',
-        birthDate: '', phone: '0966-512-308', registeredAddress: '', mailingAddress: '',
+        birthDate: '', phone: '', registeredAddress: '', mailingAddress: '',
         passportNumber: '', passportExpiryDate: '', arcExpiryDate: '', workPermitNumber: '', workPermitExpiryDate: '',
-        isTaxResident183Days: true, emergencyName: isF ? '阮文雄 (表哥)' : '林美惠', emergencyPhone: '0928-112-334',
-        roleTitle: isF ? '外籍僑外生 PT・吧台與備料' : '儲備副店・資深吧台手',
-        type: isF ? 'PT' : 'FT', flexHoursType: 'STANDARD', hireDate: '2026-11-23', healthCertDate: '2026-11-18',
+        isTaxResident183Days: true, emergencyName: '', emergencyPhone: '',
+        roleTitle: isF ? '外籍僑外生 PT・外場/內場' : '正職夥伴',
+        type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), healthCertDate: '',
         stations: isF ? ['BAR', 'PREP'] : ['BAR', 'POS'], canKey: !isF,
-        baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: isF ? 0 : 3000, posAllow: isF ? 0 : 2000,
-        skillAllow: 0, transportAllow: 0, splitAllow: isF ? 0 : 1500, attBonus: isF ? 0 : 2000, perfBonus: isF ? 800 : 2500,
-        laborBracket: isF ? 21000 : 42000, nhiBracket: isF ? 28590 : 42000, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
+        baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: isF ? 0 : 3000, posAllow: 0,
+        skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: isF ? 0 : 2000, perfBonus: 0,
+        laborBracket: isF ? 21000 : 36300, nhiBracket: isF ? 28590 : 36300, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
         bankCode: isF ? '700' : '822', bankName: isF ? '中華郵政 (郵局)' : '中國信託商業銀行',
         accountNumber: '', accountHolder: '', idFrontImg: '', idBackImg: '', workPermitImg: '', bankBookImg: '',
         color: isF ? '#0284C7' : '#0F766E'
@@ -876,6 +903,8 @@
         snap.storeSettings.name = meta.name;
         App.multiStore.storeData[meta.id] = snap;
       });
+      App.hr.editingId = null;
+      App.hr.form = makeEmptyHrForm('LOCAL');
     }
 
     async function clearCurrentBrandDemoData() {
@@ -911,6 +940,8 @@
         snap.storeSettings.name = meta.name;
         App.multiStore.storeData[meta.id] = snap;
       });
+      App.hr.editingId = null;
+      App.hr.form = makeEmptyHrForm('LOCAL');
       App.mainTab = 'HR';
       App.toast = '🧹 已清空所有示範員工與紀錄，現在是乾淨的空白門市，您可以直接新增自己的員工！';
       render();
@@ -1472,6 +1503,107 @@ end $$;`;
       render();
     }
 
+    const SENSITIVE_EMP_FIELDS = [
+      'nationalId', 'accountNumber', 'phone', 'registeredAddress', 'mailingAddress',
+      'passportNumber', 'emergencyPhone', 'idFrontImg', 'idBackImg', 'workPermitImg', 'bankBookImg',
+    ];
+    const _brandCryptoKeyCache = {};
+
+    function canAccessSensitivePii() {
+      const r = App.storeSettings && App.storeSettings.activeRole;
+      return r === 'OWNER' || r === 'HR';
+    }
+
+    function maskSensitiveText(val, keepTail = 3) {
+      const s = String(val || '').trim();
+      if (!s) return '—';
+      if (s.length <= keepTail + 2) return '••••••';
+      return s.slice(0, 2) + '••••' + s.slice(-keepTail);
+    }
+
+    function _bytesToBase64(bytes) {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    function _base64ToBytes(b64) {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    async function getBrandCryptoKey(brandId) {
+      if (!window.crypto || !window.crypto.subtle) return null;
+      const keyId = String(brandId || 'brand-default');
+      if (_brandCryptoKeyCache[keyId]) return _brandCryptoKeyCache[keyId];
+      const rawHash = await window.crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(`shiftcraft-pii-aes256-v1:${keyId}`)
+      );
+      const key = await window.crypto.subtle.importKey('raw', rawHash, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+      _brandCryptoKeyCache[keyId] = key;
+      return key;
+    }
+
+    async function encryptPiiValue(val, key) {
+      if (!key || typeof val !== 'string' || !val || val.startsWith('ENC_GCM_V1:')) return val;
+      try {
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const encBuf = await window.crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv },
+          key,
+          new TextEncoder().encode(val)
+        );
+        return 'ENC_GCM_V1:' + _bytesToBase64(iv) + ':' + _bytesToBase64(new Uint8Array(encBuf));
+      } catch (e) {
+        return val;
+      }
+    }
+
+    async function decryptPiiValue(val, key) {
+      if (!key || typeof val !== 'string' || !val.startsWith('ENC_GCM_V1:')) return val;
+      try {
+        const parts = val.split(':');
+        if (parts.length !== 3) return val;
+        const iv = _base64ToBytes(parts[1]);
+        const ct = _base64ToBytes(parts[2]);
+        const decBuf = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+        return new TextDecoder().decode(decBuf);
+      } catch (e) {
+        return val;
+      }
+    }
+
+    async function encryptStorePayload(payload, brandId) {
+      if (!payload || !Array.isArray(payload.employees)) return payload;
+      const key = await getBrandCryptoKey(brandId);
+      if (!key) return payload;
+      const cloned = JSON.parse(JSON.stringify(payload));
+      for (const emp of cloned.employees) {
+        if (!emp) continue;
+        for (const field of SENSITIVE_EMP_FIELDS) {
+          if (emp[field]) emp[field] = await encryptPiiValue(String(emp[field]), key);
+        }
+      }
+      return cloned;
+    }
+
+    async function decryptStorePayload(payload, brandId) {
+      if (!payload || !Array.isArray(payload.employees)) return payload;
+      const key = await getBrandCryptoKey(brandId);
+      if (!key) return payload;
+      const cloned = JSON.parse(JSON.stringify(payload));
+      for (const emp of cloned.employees) {
+        if (!emp) continue;
+        for (const field of SENSITIVE_EMP_FIELDS) {
+          if (emp[field]) emp[field] = await decryptPiiValue(String(emp[field]), key);
+        }
+      }
+      return cloned;
+    }
+
     async function pushStoreToCloud(storeId) {
       if (!_sbClient || (App.cloud.status !== 'SYNCED' && App.cloud.status !== 'SYNCING')) return;
       const ms = App.multiStore;
@@ -1481,12 +1613,13 @@ end $$;`;
       ms.storeData[sid] = payload;
       try {
         App.cloud.status = 'SYNCING';
+        const encryptedPayload = await encryptStorePayload(payload, ms.brandId);
         const { error } = await _sbClient.from('shiftcraft_stores').upsert({
           brand_id: ms.brandId,
           store_id: sid,
           store_name: meta.name,
           city: meta.city || '',
-          payload,
+          payload: encryptedPayload,
           updated_by: CLOUD_CLIENT_ID,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'brand_id,store_id' });
@@ -1550,7 +1683,9 @@ end $$;`;
         if (data && data.length > 0) {
           App.multiStore.stores = data.map(r => ({ id: r.store_id, name: r.store_name, city: r.city || '' }));
           App.multiStore.storeData = {};
-          data.forEach(r => { App.multiStore.storeData[r.store_id] = r.payload; });
+          for (const r of data) {
+            App.multiStore.storeData[r.store_id] = await decryptStorePayload(r.payload, App.multiStore.brandId);
+          }
           const urlStore = urlParams.get('store');
           const pickId = (urlStore && App.multiStore.storeData[urlStore]) ? urlStore : data[0].store_id;
           App.multiStore.activeStoreId = pickId;
@@ -1558,6 +1693,7 @@ end $$;`;
           _suppressCloudPush = true;
           applyStoreSnapshot(App.multiStore.storeData[pickId], pickMeta);
           syncBoundLineEmployee();
+          if (!App.hr.editingId) App.hr.form = makeEmptyHrForm(App.hr.form.nationalityType || 'LOCAL');
           _suppressCloudPush = false;
           App.billing.storeCount = Math.max(App.billing.storeCount, App.multiStore.stores.length);
         } else {
@@ -1577,9 +1713,10 @@ end $$;`;
             schema: 'public',
             table: 'shiftcraft_stores',
             filter: `brand_id=eq.${App.multiStore.brandId}`,
-          }, (payload) => {
+          }, async (payload) => {
             const row = payload.new;
             if (!row || row.updated_by === CLOUD_CLIENT_ID) return;
+            const decPayload = await decryptStorePayload(row.payload, App.multiStore.brandId);
             const exists = App.multiStore.stores.find(s => s.id === row.store_id);
             if (!exists) {
               App.multiStore.stores.push({ id: row.store_id, name: row.store_name, city: row.city || '' });
@@ -1587,10 +1724,10 @@ end $$;`;
               exists.name = row.store_name;
               exists.city = row.city || '';
             }
-            App.multiStore.storeData[row.store_id] = row.payload;
+            App.multiStore.storeData[row.store_id] = decPayload;
             if (row.store_id === App.multiStore.activeStoreId) {
               _suppressCloudPush = true;
-              applyStoreSnapshot(row.payload, exists || { id: row.store_id, name: row.store_name });
+              applyStoreSnapshot(decPayload, exists || { id: row.store_id, name: row.store_name });
               App.cloud.lastSyncedAt = new Date().toLocaleTimeString('zh-TW', { hour12: false });
               App.toast = `☁️ 已即時同步「${row.store_name}」的最新雲端資料`;
               render();
@@ -3578,12 +3715,27 @@ end $$;`;
           ];
       const filteredRoster = App.employees.filter(e => App.hr.rosterFilter === 'ALL' ? true : e.nationalityType === App.hr.rosterFilter);
 
+      if (!canAccessSensitivePii()) {
+        return `
+          <div class="max-w-lg mx-auto my-8 bg-white border border-amber-200 rounded-2xl p-7 text-center space-y-3">
+            <div class="text-2xl">🔒</div>
+            <h3 class="text-base font-bold text-slate-900">人事個資僅限「老闆」與「人資」存取</h3>
+            <p class="text-xs text-slate-500 leading-relaxed">為保護員工身分證、居留證與銀行存摺帳號，此模組已加密鎖定，僅老闆及人資專員可檢視與編輯。</p>
+          </div>
+        `;
+      }
+
       return `
         <div class="space-y-4">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="inline-flex bg-white border border-[var(--border)] rounded-lg p-1 text-xs font-semibold">
-              <button onclick="App.hr.subTab='FORM';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='FORM'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${App.hr.editingId ? '編輯員工檔案' : '新增員工 & OCR'}</button>
-              <button onclick="App.hr.subTab='ROSTER';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='ROSTER'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">全店員工名冊 (${App.employees.length})</button>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="inline-flex bg-white border border-[var(--border)] rounded-lg p-1 text-xs font-semibold">
+                <button onclick="App.hr.subTab='FORM';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='FORM'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${App.hr.editingId ? '編輯員工檔案' : '新增員工 & OCR'}</button>
+                <button onclick="App.hr.subTab='ROSTER';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='ROSTER'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">全店員工名冊 (${App.employees.length})</button>
+              </div>
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+                🔒 身分證與存摺採 AES-256 加密儲存・僅老闆與人資可檢視
+              </span>
             </div>
             <button onclick="App.hr.subTab='FORM';App.hr.editingId=null;App.hr.form=makeEmptyHrForm('FOREIGN');runHrOcr('ARC_FRONT', makeSampleDoc('ARC_FRONT'));setTimeout(()=>runHrOcr('ARC_BACK', makeSampleDoc('ARC_BACK')),700);setTimeout(()=>runHrOcr('WORK_PERMIT', makeSampleDoc('WORK_PERMIT')),1400);setTimeout(()=>runHrOcr('BANK_PASSBOOK', makeSampleDoc('BANK_PASSBOOK')),2100);" class="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer">
               ${ICONS.sparkles} 一鍵測試外籍證件 OCR 自動填表
@@ -3671,7 +3823,7 @@ end $$;`;
                 <section class="bg-white border border-[var(--border)] rounded-xl p-4 space-y-3 text-xs">
                   <div class="flex justify-between items-center border-b border-slate-100 pb-2">
                     <h3 class="text-sm font-bold text-slate-900">薪資結構與彈性工時設定</h3>
-                    <div class="inline-flex bg-slate-100 p-0.5 rounded-lg"><button type="button" onclick="App.hr.form.type='FT';syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='FT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">正職 FT</button><button type="button" onclick="App.hr.form.type='PT';syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='PT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">計時 PT</button></div>
+                    <div class="inline-flex bg-slate-100 p-0.5 rounded-lg"><button type="button" onclick="App.hr.form.type='FT';if(!App.hr.editingId)App.hr.form.code=getNextEmployeeCode('FT');syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='FT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">正職 FT</button><button type="button" onclick="App.hr.form.type='PT';if(!App.hr.editingId)App.hr.form.code=getNextEmployeeCode('PT');syncHrBracketsFromSalary(true);render()" class="px-2.5 py-1 rounded-md font-semibold cursor-pointer ${f.type==='PT'?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">計時 PT</button></div>
                   </div>
                   <div class="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
                     <div class="flex items-center justify-between">
