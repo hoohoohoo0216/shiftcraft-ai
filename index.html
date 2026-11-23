@@ -5979,6 +5979,64 @@ end $$;`;
       const isInLineApp = Boolean(App.lineLiff && App.lineLiff.inClient);
       const boundEmp = (lineProf && lineProf.userId) ? App.employees.find(e => e.lineUserId === lineProf.userId) : null;
 
+      // 首次開啟 LINE 尚未綁定員工身分時：只顯示「未綁定員工清單」，不露出任何其他員工的班表或薪資
+      if (lineProf && lineProf.userId && !boundEmp) {
+        const unboundEmps = App.employees.filter(e => !e.lineUserId);
+        return `
+          <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
+            <aside class="w-full ${isInLineApp ? 'max-w-none' : 'max-w-[380px] border-l border-slate-200'} bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
+              <div class="bg-[#06C755] text-white p-4">
+                <div class="flex justify-between items-center text-xs gap-2">
+                  <div class="flex items-center gap-2 min-w-0">
+                    ${lineProf.pictureUrl ? `<img src="${lineProf.pictureUrl}" class="w-8 h-8 rounded-full border border-white/60 shrink-0 object-cover" />` : ''}
+                    <div class="min-w-0">
+                      <div class="font-bold truncate">${lineProf.displayName} · 班匠 LINE</div>
+                      <div class="text-[10px] text-white/85">${App.storeSettings.name}</div>
+                    </div>
+                  </div>
+                  <button onclick="closeLiffWindowOrDrawer()" class="px-2.5 py-1 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold shrink-0">關閉</button>
+                </div>
+              </div>
+
+              <div class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+                <div class="bg-white border border-slate-200 rounded-2xl p-4 space-y-3 shadow-xs">
+                  <div class="space-y-1">
+                    <div class="text-sm font-bold text-slate-900">👋 首次使用：請選擇您的姓名完成綁定</div>
+                    <p class="text-[11px] text-slate-500 leading-relaxed">
+                      為保護個人班表與薪資隱私，請先點選您自己的名字。綁定完成後，下次從 LINE 點開就會直接顯示您的個人班表、打卡、請假與薪資條。
+                    </p>
+                  </div>
+
+                  ${unboundEmps.length === 0 ? `
+                    <div class="rounded-xl bg-amber-50 border border-amber-200 p-4 text-center space-y-1.5">
+                      <div class="font-bold text-amber-900">目前沒有可綁定的未綁定員工</div>
+                      <p class="text-[11px] text-amber-800">門市所有員工皆已完成 LINE 綁定，或尚未建檔。請聯繫店長協助確認。</p>
+                    </div>
+                  ` : `
+                    <div class="space-y-2 pt-1">
+                      <div class="text-[11px] font-semibold text-slate-500">尚未綁定的門市員工（${unboundEmps.length} 位）</div>
+                      ${unboundEmps.map(e => `
+                        <button
+                          type="button"
+                          onclick="if(confirm('確定將您的 LINE 帳號綁定為「${e.name}（${e.code}）」嗎？'))bindLineUserToEmployee('${e.id}')"
+                          class="w-full p-3 rounded-xl border border-slate-200 bg-slate-50/70 hover:border-[#06C755] hover:bg-emerald-50/50 transition flex items-center justify-between gap-2 text-left cursor-pointer"
+                        >
+                          <div class="min-w-0">
+                            <div class="font-bold text-slate-900 text-sm">${e.name}</div>
+                            <div class="text-[11px] text-slate-500 mono-num mt-0.5">${e.code} · ${e.roleTitle || (e.type === 'FT' ? '正職夥伴' : '計時夥伴')}</div>
+                          </div>
+                          <span class="shrink-0 px-3 py-1.5 rounded-lg bg-[#06C755] text-white font-bold text-[11px]">確認綁定</span>
+                        </button>
+                      `).join('')}
+                    </div>
+                  `}
+                </div>
+              </div>
+            </aside>
+          </div>
+        `;
+      }
+
       return `
         <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
           <aside class="w-full ${isInLineApp ? 'max-w-none' : 'max-w-[380px] border-l border-slate-200'} bg-[#F4F5F7] h-full shadow-2xl flex flex-col" onclick="event.stopPropagation()">
