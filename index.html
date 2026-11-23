@@ -2270,23 +2270,23 @@ end $$;`;
 
     function parseTaiwanBirthDate(text) {
       const clean = String(text || '').replace(/\s+/g, '');
-      // 1. 民國年格式：民國85年5月12日 或 85年05月12日
-      const rocM = clean.match(/(?:民國)?(\d{2,3})年(\d{1,2})月(\d{1,2})日?/);
+      // 1. 民國年格式：民國85年5月12日 或 85/05/12 → 直接保留民國年 (例：085/05/12)
+      const rocM = clean.match(/(?:民國)?(\d{2,3})[年./-](\d{1,2})[月./-](\d{1,2})日?/);
       if (rocM) {
         const y = parseInt(rocM[1], 10);
-        const adYear = y < 1911 ? y + 1911 : y;
         const m = parseInt(rocM[2], 10);
         const d = parseInt(rocM[3], 10);
-        if (adYear >= 1930 && adYear <= 2015 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
-          return `${adYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        if (y >= 15 && y <= 120 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return `${String(y).padStart(3, '0')}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
         }
       }
-      // 2. 西元年格式（ARC / 護照）：1996/05/12 或 1996-05-12
-      const adM = clean.match(/(19\d{2}|20[01]\d)[./-](\d{1,2})[./-](\d{1,2})/);
+      // 2. 西元年格式（外籍 ARC / 護照）：1998/09/03 或 1998-09-03 → 自動轉成民國年 (例：087/09/03)
+      const adM = clean.match(/(19\d{2}|20[01]\d)[年./-](\d{1,2})[月./-](\d{1,2})日?/);
       if (adM) {
-        const y = parseInt(adM[1], 10), m = parseInt(adM[2], 10), d = parseInt(adM[3], 10);
-        if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
-          return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const adYear = parseInt(adM[1], 10), m = parseInt(adM[2], 10), d = parseInt(adM[3], 10);
+        const rocYear = adYear - 1911;
+        if (rocYear >= 15 && rocYear <= 120 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return `${String(rocYear).padStart(3, '0')}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
         }
       }
       return '';
@@ -3917,7 +3917,7 @@ end $$;`;
                   <div class="grid grid-cols-2 gap-3">
                     <div><label class="block font-semibold text-slate-600 mb-1">員工編號</label><input value="${f.code}" oninput="App.hr.form.code=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">中文姓名 *</label><input value="${f.name}" oninput="App.hr.form.name=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold" /></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">出生年月日（生日）</label><input type="date" value="${f.birthDate||''}" onchange="App.hr.form.birthDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">出生年月日（民國）</label><input type="text" value="${f.birthDate||''}" placeholder="例：085/05/12" oninput="App.hr.form.birthDate=this.value" onblur="const norm=parseTaiwanBirthDate(this.value);if(norm){App.hr.form.birthDate=norm;render();}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">到職日 *</label><input type="date" value="${f.hireDate||''}" onchange="App.hr.form.hireDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     ${isF ? `
