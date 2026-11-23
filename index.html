@@ -2126,6 +2126,77 @@ end $$;`;
       render();
     }
 
+    function renderEmpSkillBadges(emp) {
+      if (!emp || !Array.isArray(emp.stations) || emp.stations.length === 0) return '';
+      const chips = emp.stations.map(code => {
+        const ws = (App.storeSettings.workstations || []).find(w => w.code === code) || STATIONS[code];
+        if (!ws) return '';
+        return `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none" style="background:${ws.badgeBg};color:${ws.badgeText};">${ws.shortName || ws.name}</span>`;
+      }).filter(Boolean);
+      if (chips.length === 0) return '';
+      return `<div class="flex flex-wrap gap-1 mt-1">${chips.join('')}</div>`;
+    }
+
+    function copyPrevWeekSchedule() {
+      const curDays = getVisibleWeekDays();
+      const prevDates = curDays.map(d => {
+        const dt = _parseYmd(d.date);
+        dt.setDate(dt.getDate() - 7);
+        return _fmtYmd(dt);
+      });
+      const sourceShifts = App.sched.shifts.filter(s =>
+        prevDates.includes(s.date) && s.shiftCode && SHIFT_TEMPLATES[s.shiftCode] && !SHIFT_TEMPLATES[s.shiftCode].isOff
+      );
+      if (sourceShifts.length === 0) {
+        App.toast = `前一週（${prevDates[0].slice(5)} – ${prevDates[6].slice(5)}）尚未有排班紀錄可供複製。`;
+        render();
+        return;
+      }
+      let copied = 0;
+      curDays.forEach((d, idx) => {
+        if (getEffectiveDayConfig(d.date).isClosed) return;
+        const srcDate = prevDates[idx];
+        App.employees.forEach(emp => {
+          const src = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === srcDate);
+          if (!src || !SHIFT_TEMPLATES[src.shiftCode] || SHIFT_TEMPLATES[src.shiftCode].isOff) return;
+          const existing = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === d.date);
+          const clone = { ...JSON.parse(JSON.stringify(src)), date: d.date, aiReason: '複製前一週班表' };
+          if (existing) Object.assign(existing, clone);
+          else App.sched.shifts.push(clone);
+          copied++;
+        });
+      });
+      App.toast = `📋 已複製前一週班表至本週（${curDays[0].shortDate}–${curDays[6].shortDate}），共帶入 ${copied} 筆班次！`;
+      render();
+    }
+
+    function copyPrevMonthSchedule() {
+      const mInfo = getMonthCalendarDays(App.sched.selectedDate);
+      let copied = 0;
+      mInfo.days.forEach(d => {
+        if (getEffectiveDayConfig(d.date).isClosed) return;
+        // 依「相同星期幾（28 天前）」對齊複製，確保週一對週一、週末對週末
+        const srcDt = _parseYmd(d.date);
+        srcDt.setDate(srcDt.getDate() - 28);
+        const srcDate = _fmtYmd(srcDt);
+        App.employees.forEach(emp => {
+          const src = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === srcDate);
+          if (!src || !SHIFT_TEMPLATES[src.shiftCode] || SHIFT_TEMPLATES[src.shiftCode].isOff) return;
+          const existing = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === d.date);
+          const clone = { ...JSON.parse(JSON.stringify(src)), date: d.date, aiReason: '複製前一個月班表' };
+          if (existing) Object.assign(existing, clone);
+          else App.sched.shifts.push(clone);
+          copied++;
+        });
+      });
+      if (copied === 0) {
+        App.toast = `前一個月尚未有排班紀錄可供複製至 ${mInfo.year} 年 ${mInfo.month} 月。`;
+      } else {
+        App.toast = `📋 已依相同星期對應，複製前一個月班表至 ${mInfo.year} 年 ${mInfo.month} 月（共帶入 ${copied} 筆班次）！`;
+      }
+      render();
+    }
+
     function getEffectiveDayConfig(date) {
       if (App.sched && App.sched.dayConfig && App.sched.dayConfig[date]) {
         return App.sched.dayConfig[date];
@@ -3777,7 +3848,9 @@ end $$;`;
                 <button onclick="shiftSchedWeek(1)" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">下一週 ▶</button>
                 ${(Number(App.sched.weekOffset) || 0) !== 0 ? `<button onclick="App.sched.weekOffset=0;App.sched.selectedDate=getVisibleWeekDays()[0].date;render()" class="h-7 px-2.5 rounded-lg border border-teal-200 bg-teal-50 text-[#0F766E] font-semibold cursor-pointer">回到本週</button>` : ''}
               </div>
-              <div class="flex items-center gap-1">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <button onclick="if(confirm('確定要將前一週的班表複製到目前顯示的這一週嗎？'))copyPrevWeekSchedule()" class="h-7 px-2.5 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-semibold cursor-pointer">📋 複製前一週</button>
+                <button onclick="if(confirm('確定要依相同星期對應，將前一個月的班表複製到本月嗎？'))copyPrevMonthSchedule()" class="h-7 px-2.5 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold cursor-pointer">📋 複製前一個月</button>
                 <button onclick="App.sched.viewMode='WEEK_OVERVIEW';render()" class="h-7 px-3 rounded-lg font-bold cursor-pointer transition ${App.sched.viewMode==='WEEK_OVERVIEW'?'bg-[#0F766E] text-white':'border border-slate-200 bg-white hover:bg-slate-50 text-slate-700'}">全週總覽</button>
                 <button onclick="App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-3 rounded-lg font-bold cursor-pointer transition ${App.sched.viewMode==='MONTH_GRID'?'bg-[#0F766E] text-white':'border border-slate-200 bg-white hover:bg-slate-50 text-slate-700'}">📅 整月預排總覽</button>
               </div>
@@ -3868,6 +3941,7 @@ end $$;`;
                             ${row.emp.flexHoursType && row.emp.flexHoursType !== 'STANDARD' ? '<span class="text-[10px] px-1 py-0.2 rounded bg-teal-50 text-teal-700 font-semibold">彈性</span>' : ''}
                           </div>
                           <div class="text-[11px] text-slate-500 mt-0.5 mono-num">${row.emp.type === 'FT' ? '月薪' : '時薪'} · ${fmtDurationZh(row.hours)}</div>
+                          ${renderEmpSkillBadges(row.emp)}
                         </div>
 
                         <div onclick="App.sched.editingShiftModal={empId:'${row.emp.id}',date:'${selDate}'};render()" class="relative min-h-[60px] cursor-pointer">
@@ -3976,6 +4050,7 @@ end $$;`;
                             <td class="p-2.5 sticky left-0 bg-white z-10 border-r border-[var(--border)]">
                               <div class="font-bold text-slate-900 truncate">${emp.name}</div>
                               <div class="text-[10px] text-slate-500 mono-num">${emp.type} · ${monthHours.toFixed(1)}h</div>
+                              ${renderEmpSkillBadges(emp)}
                             </td>
                             ${mInfo.days.map(d => {
                               const isClosed = getEffectiveDayConfig(d.date).isClosed;
@@ -4023,6 +4098,7 @@ end $$;`;
                           <td class="p-3 border-r border-[var(--border)]">
                             <div class="font-bold text-slate-900">${emp.name}</div>
                             <div class="text-[11px] text-slate-500 mono-num">${emp.type} · ${sum.hours.toFixed(1)}h</div>
+                            ${renderEmpSkillBadges(emp)}
                           </td>
                           ${weekDays.map(d => {
                             const isClosed = getEffectiveDayConfig(d.date).isClosed;
