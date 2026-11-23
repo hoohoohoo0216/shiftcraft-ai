@@ -804,6 +804,9 @@
       App.billing.planCode = App.auth.planCode;
       App.billing.billingCycle = (acc.billing_cycle || acc.billingCycle || 'MONTHLY').toUpperCase();
       App.billing.storeCount = App.auth.maxStores;
+      // 真實帳號一律移除體驗用假帳單與假信用卡
+      App.billing.invoices = (App.billing.invoices || []).filter(inv => !['INV-2026-11', 'INV-2026-10', 'INV-2026-09'].includes(inv.id));
+      App.billing.cards = (App.billing.cards || []).filter(c => c.id !== 'card-1');
       const ent = getAccountEntitlement();
       App.billing.nextChargeDate = ent.expiresDateStr;
 
@@ -5255,7 +5258,6 @@ end $$;`;
             </div>
             <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
               ${!ent.isDemo ? `<button onclick="refreshAccountSubscription(true)" class="h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">🔄 重新檢查開通狀態</button>` : ''}
-              ${!ent.isDemo ? `<button onclick="if(confirm('確定要清空目前門市的示範員工、班表與打卡紀錄，從空白門市重新開始嗎？'))clearCurrentBrandDemoData()" class="h-8 px-3 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold cursor-pointer">🧹 清空示範資料</button>` : ''}
               <button onclick="App.billing.subTab='PLANS';render()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">變更方案 / 門市數</button>
               <button onclick="logoutToAuthScreen()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">登出</button>
             </div>
@@ -5482,7 +5484,7 @@ end $$;`;
                   <p class="text-[11px] text-slate-500">每次定期定額授權成功後，自動透過金流開立三聯式電子發票</p>
                 </div>
                 <div class="flex items-center gap-2">
-                  <button onclick="simulateMonthlyCharge()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">模擬本月定期定額扣款</button>
+                  ${ent.isDemo ? `<button onclick="simulateMonthlyCharge()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">模擬本月定期定額扣款</button>` : ''}
                   <button onclick="exportInvoicesCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出帳單 CSV</button>
                 </div>
               </div>
