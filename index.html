@@ -2238,46 +2238,14 @@ end $$;`;
       return c.toDataURL('image/png');
     }
 
-    function runHrOcr(docType, rawUrl) {
+    function saveHrDocPhoto(docType, rawUrl) {
       applyWatermark(rawUrl, App.hr.watermark, (url) => {
         if (docType === 'ARC_FRONT' || docType === 'ID_FRONT') App.hr.form.idFrontImg = url;
         if (docType === 'ARC_BACK' || docType === 'ID_BACK') App.hr.form.idBackImg = url;
         if (docType === 'WORK_PERMIT') App.hr.form.workPermitImg = url;
         if (docType === 'BANK_PASSBOOK') App.hr.form.bankBookImg = url;
-        App.hr.scanningDoc = docType;
+        App.toast = '證件照片已加上浮水印並加密暫存，儲存員工檔案後將同步至雲端。';
         render();
-        setTimeout(() => {
-          const f = App.hr.form;
-          if (docType === 'ARC_FRONT') {
-            f.nationalityType = 'FOREIGN'; f.name = '黎文安'; f.passportEnglishName = 'LE VAN AN';
-            f.nationalId = 'F801234564'; f.nationality = '越南 (Vietnam)'; f.gender = '男';
-            f.arcExpiryDate = '2028-06-30'; f.accountHolder = 'LE VAN AN';
-            App.hr.ocrHits = { ...App.hr.ocrHits, name:true, nationalId:true, arcExpiryDate:true };
-            App.toast = 'AI OCR 辨識【外僑居留證 ARC 正面】完成，統一證號 F801234564 檢查碼通過。';
-          } else if (docType === 'ARC_BACK') {
-            f.registeredAddress = '台北市大安區羅斯福路四段1號'; f.passportNumber = 'C9012345';
-            App.hr.ocrHits = { ...App.hr.ocrHits, registeredAddress:true };
-            App.toast = 'AI OCR 辨識【外僑居留證 ARC 反面】完成，已自動帶入在台居留地址與護照號碼。';
-          } else if (docType === 'WORK_PERMIT') {
-            f.workPermitNumber = '勞動發事字第1151029883號'; f.workPermitExpiryDate = '2027-09-30';
-            App.hr.ocrHits = { ...App.hr.ocrHits, workPermitNumber:true };
-            App.toast = 'AI OCR 辨識【勞動部工作許可函】完成。';
-          } else if (docType === 'ID_FRONT') {
-            f.nationalityType = 'LOCAL'; f.name = '陳柏宇'; f.nationalId = 'A128456789'; f.accountHolder = '陳柏宇';
-            App.hr.ocrHits = { ...App.hr.ocrHits, name:true, nationalId:true };
-            App.toast = 'AI OCR 辨識【台灣身分證正面】完成。';
-          } else if (docType === 'ID_BACK') {
-            f.registeredAddress = '台北市大同區赤峰街41巷8號4樓'; f.emergencyName = '林淑惠 (母)';
-            App.hr.ocrHits = { ...App.hr.ocrHits, registeredAddress:true };
-            App.toast = 'AI OCR 辨識【台灣身分證反面】完成，已自動帶入戶籍地址與緊急聯絡人。';
-          } else if (docType === 'BANK_PASSBOOK') {
-            f.bankCode = '822'; f.bankName = '中國信託商業銀行'; f.accountNumber = '141540089231';
-            App.hr.ocrHits = { ...App.hr.ocrHits, accountNumber:true };
-            App.toast = 'AI OCR 辨識【薪轉存摺封面】完成，已填入 822 中國信託帳號。';
-          }
-          App.hr.scanningDoc = null;
-          render();
-        }, 650);
       });
     }
 
@@ -2295,7 +2263,7 @@ end $$;`;
     function saveHrForm(e) {
       e.preventDefault();
       const f = App.hr.form;
-      if (!f.name.trim() || !f.nationalId.trim()) { App.toast = '請先 OCR 辨識或填入「姓名」與「身分證 / ARC 統一證號」。'; render(); return; }
+      if (!f.name.trim() || !f.nationalId.trim()) { App.toast = '請填入「姓名」與「身分證 / ARC 統一證號」。'; render(); return; }
       if (App.hr.editingId) {
         const idx = App.employees.findIndex(x => x.id === App.hr.editingId);
         if (idx >= 0) App.employees[idx] = { ...App.employees[idx], ...JSON.parse(JSON.stringify(f)) };
@@ -3815,16 +3783,13 @@ end $$;`;
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap items-center gap-2">
               <div class="inline-flex bg-white border border-[var(--border)] rounded-lg p-1 text-xs font-semibold">
-                <button onclick="App.hr.subTab='FORM';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='FORM'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${App.hr.editingId ? '編輯員工檔案' : '新增員工 & OCR'}</button>
+                <button onclick="App.hr.subTab='FORM';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='FORM'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${App.hr.editingId ? '編輯員工檔案' : '新增員工'}</button>
                 <button onclick="App.hr.subTab='ROSTER';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${App.hr.subTab==='ROSTER'?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">全店員工名冊 (${App.employees.length})</button>
               </div>
               <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
                 🔒 身分證與存摺採 AES-256 加密儲存・僅老闆與人資可檢視
               </span>
             </div>
-            <button onclick="App.hr.subTab='FORM';App.hr.editingId=null;App.hr.form=makeEmptyHrForm('FOREIGN');runHrOcr('ARC_FRONT', makeSampleDoc('ARC_FRONT'));setTimeout(()=>runHrOcr('ARC_BACK', makeSampleDoc('ARC_BACK')),700);setTimeout(()=>runHrOcr('WORK_PERMIT', makeSampleDoc('WORK_PERMIT')),1400);setTimeout(()=>runHrOcr('BANK_PASSBOOK', makeSampleDoc('BANK_PASSBOOK')),2100);" class="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer">
-              ${ICONS.sparkles} 一鍵測試外籍證件 OCR 自動填表
-            </button>
           </div>
 
           ${App.hr.subTab === 'FORM' ? `
@@ -3837,23 +3802,22 @@ end $$;`;
                     <button type="button" onclick="App.hr.form.nationalityType='LOCAL';App.hr.form.nationality='中華民國 (台灣)';App.hr.form.isTaxResident183Days=true;render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${!isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">本國籍員工</button>
                     <button type="button" onclick="App.hr.form.nationalityType='FOREIGN';if(App.hr.form.nationality==='中華民國 (台灣)')App.hr.form.nationality='越南 (Vietnam)';render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">外籍員工 (ARC / 工作證 / 183天稅務)</button>
                   </div>
-                  ${App.hr.editingId ? `<button type="button" onclick="App.hr.editingId=null;App.hr.form=makeEmptyHrForm('FOREIGN');render()" class="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-semibold cursor-pointer">取消編輯 (${f.name})</button>` : ''}
+                  ${App.hr.editingId ? `<button type="button" onclick="App.hr.editingId=null;App.hr.form=makeEmptyHrForm('LOCAL');render()" class="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-semibold cursor-pointer">取消編輯 (${f.name})</button>` : ''}
                 </div>
                 ${isF ? `<div class="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 font-medium">${stMeta.note}</div>` : ''}
               </div>
 
-              <!-- 證件 OCR 上傳 -->
+              <!-- 證件與存摺照片上傳 -->
               <div class="grid grid-cols-1 sm:grid-cols-2 ${isF ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3">
                 ${slots.map(s => `
                   <div class="bg-white border border-[var(--border)] rounded-xl p-3 space-y-2.5">
                     <div class="flex justify-between text-xs font-bold text-slate-800"><span>${s.title}</span>${s.img?'<span class="text-emerald-600 text-[11px]">已加浮水印</span>':''}</div>
                     <div class="relative h-[120px] rounded-lg border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center overflow-hidden">
                       ${s.img ? `<img src="${s.img}" onclick="App.hr.previewImgModal={title:'${s.title}',src:'${s.img}'};render()" class="w-full h-full object-cover cursor-zoom-in" />` : '<span class="text-xs text-slate-400">尚未上傳證件</span>'}
-                      ${App.hr.scanningDoc === s.key ? '<div class="absolute inset-0 bg-slate-900/40 flex items-center justify-center"><div class="ocr-scan-bar"></div><span class="px-2 py-1 rounded bg-slate-900 text-emerald-300 text-xs font-semibold">OCR 掃描中...</span></div>' : ''}
                     </div>
                     <div class="grid grid-cols-2 gap-2 text-xs font-semibold">
-                      <label class="h-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center cursor-pointer">上傳照片<input type="file" accept="image/*" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>runHrOcr('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
-                      <label class="h-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center gap-1 cursor-pointer">${ICONS.camera} 拍照<input type="file" accept="image/*" capture="environment" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>runHrOcr('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
+                      <label class="h-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center cursor-pointer">上傳照片<input type="file" accept="image/*" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>saveHrDocPhoto('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
+                      <label class="h-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center gap-1 cursor-pointer">${ICONS.camera} 拍照<input type="file" accept="image/*" capture="environment" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>saveHrDocPhoto('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
                     </div>
                   </div>
                 `).join('')}
@@ -3865,17 +3829,17 @@ end $$;`;
                   <h3 class="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">基本個資與身分證號</h3>
                   <div class="grid grid-cols-2 gap-3">
                     <div><label class="block font-semibold text-slate-600 mb-1">員工編號</label><input value="${f.code}" oninput="App.hr.form.code=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">中文姓名 *</label><input value="${f.name}" oninput="App.hr.form.name=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold ${App.hr.ocrHits.name?'ocr-filled':''}" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">中文姓名 *</label><input value="${f.name}" oninput="App.hr.form.name=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">到職日 *</label><input type="date" value="${f.hireDate||''}" onchange="App.hr.form.hireDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     ${isF ? `
                       <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">外籍聘僱類別</label><select onchange="App.hr.form.foreignStatusType=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold">${FOREIGN_STATUSES.map(o=>`<option value="${o.code}" ${f.foreignStatusType===o.code?'selected':''}>${o.label}</option>`).join('')}</select></div>
-                      <div><label class="block font-semibold text-slate-600 mb-1">居留證效期 (ARC)</label><input type="date" value="${f.arcExpiryDate||''}" oninput="App.hr.form.arcExpiryDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num ${App.hr.ocrHits.arcExpiryDate?'ocr-filled':''}" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">居留證效期 (ARC)</label><input type="date" value="${f.arcExpiryDate||''}" oninput="App.hr.form.arcExpiryDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                       <div><label class="block font-semibold text-slate-600 mb-1">在台滿 183 天 (稅務)</label><select onchange="App.hr.form.isTaxResident183Days=(this.value==='YES');render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold"><option value="YES" ${f.isTaxResident183Days?'selected':''}>已滿 183 天 (免預扣)</option><option value="NO" ${!f.isTaxResident183Days?'selected':''}>未滿 183 天 (預扣 6%/18%)</option></select></div>
                     ` : ''}
                     <div class="col-span-2">
                       <label class="block font-semibold text-slate-600 mb-1">${isF ? '統一證號 (ARC) *' : '身分證字號 *'}</label>
-                      <input value="${f.nationalId}" oninput="App.hr.form.nationalId=this.value.toUpperCase();updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold ${App.hr.ocrHits.nationalId?'ocr-filled':''}" />
+                      <input value="${f.nationalId}" oninput="App.hr.form.nationalId=this.value.toUpperCase();updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" />
                       <div id="hr-id-validation" class="text-[11px] font-semibold mt-1 ${idVal ? (idVal.valid?'text-emerald-600':'text-rose-600') : ''}">${idVal ? idVal.msg : ''}</div>
                     </div>
                     <div>
@@ -3890,8 +3854,8 @@ end $$;`;
                       </div>
                     </div>
                     <div class="col-span-2">
-                      <label class="block font-semibold text-slate-600 mb-1">${isF ? '戶籍 / 在台居留地址 (ARC 反面 OCR)' : '戶籍地址 (身分證反面 OCR)'}</label>
-                      <input value="${f.registeredAddress||''}" oninput="App.hr.form.registeredAddress=this.value" placeholder="例：台北市大同區赤峰街41巷8號4樓" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 ${App.hr.ocrHits.registeredAddress?'ocr-filled':''}" />
+                      <label class="block font-semibold text-slate-600 mb-1">${isF ? '戶籍 / 在台居留地址' : '戶籍地址'}</label>
+                      <input value="${f.registeredAddress||''}" oninput="App.hr.form.registeredAddress=this.value" placeholder="例：台北市大同區赤峰街41巷8號4樓" class="w-full h-9 px-2.5 rounded-lg border border-slate-200" />
                     </div>
                     <div class="col-span-2">
                       <div class="flex items-center justify-between mb-1">
