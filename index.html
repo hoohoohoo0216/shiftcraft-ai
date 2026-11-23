@@ -1768,8 +1768,17 @@ end $$;`;
       App.cloud.anonKey = cfg.anonKey;
       const urlParams = new URLSearchParams(window.location.search);
       const urlBrand = urlParams.get('brand');
+      const urlStore = urlParams.get('store');
       if (urlBrand) {
         App.multiStore.brandId = urlBrand;
+        try {
+          localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({
+            url: cfg.url,
+            anonKey: cfg.anonKey,
+            brandId: urlBrand,
+            storeId: urlStore || (cfg && cfg.storeId) || '',
+          }));
+        } catch (e) {}
       } else if (cfg.brandId) {
         App.multiStore.brandId = cfg.brandId;
       }
@@ -1794,8 +1803,8 @@ end $$;`;
           for (const r of data) {
             App.multiStore.storeData[r.store_id] = await decryptStorePayload(r.payload, App.multiStore.brandId);
           }
-          const urlStore = urlParams.get('store');
-          const pickId = (urlStore && App.multiStore.storeData[urlStore]) ? urlStore : data[0].store_id;
+          const savedStore = urlStore || (cfg && cfg.storeId) || '';
+          const pickId = (savedStore && App.multiStore.storeData[savedStore]) ? savedStore : data[0].store_id;
           App.multiStore.activeStoreId = pickId;
           const pickMeta = App.multiStore.stores.find(s => s.id === pickId);
           _suppressCloudPush = true;
