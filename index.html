@@ -1456,6 +1456,7 @@ end $$;`;
       }
       if (snap.storeSettings) {
         App.storeSettings = Object.assign({}, App.storeSettings, snap.storeSettings);
+        App.storeSettings.adminDraft = { name: '', title: '', role: 'STORE_MANAGER', contact: '' };
         if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
         if (typeof syncShiftTemplatesCatalog === 'function') syncShiftTemplatesCatalog();
       }
