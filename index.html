@@ -2157,7 +2157,7 @@ end $$;`;
         const isOvernight = en > 24;
         return [{ start: st, end: en, isOvernight, label: `${fmtHour(st)}–${fmtHour(en)}${isOvernight ? ' (+1)' : ''}` }];
       }
-      if (shift.shiftCode === 'SPLIT') {
+      if (shift.shiftCode === 'SPLIT' && tpl.startHour === 10.5 && tpl.endHour === 21.5 && String(tpl.name || '').includes('兩頭班')) {
         return [{ start: 10.5, end: 14.5, isOvernight: false, label: '10:30–14:30' }, { start: 17.5, end: 21.5, isOvernight: false, label: '17:30–21:30' }];
       }
       const isOvernight = tpl.endHour > 24;
@@ -2191,13 +2191,14 @@ end $$;`;
       if (!s) { s = { employeeId: modal.empId, date: modal.date, shiftCode: code, station, aiReason: '手動排班' }; App.sched.shifts.push(s); }
       s.shiftCode = code;
       s.station = station;
-      if (!SHIFT_TEMPLATES[code].isOff && code !== 'SPLIT' && startVal && endVal) {
+      const tpl = SHIFT_TEMPLATES[code];
+      const isClassicSplit = code === 'SPLIT' && tpl && tpl.startHour === 10.5 && tpl.endHour === 21.5 && String(tpl.name || '').includes('兩頭班');
+      if (tpl && !tpl.isOff && !isClassicSplit && startVal && endVal) {
         const [sh, sm] = startVal.split(':').map(Number);
         const [eh, em] = endVal.split(':').map(Number);
         const stH = sh + sm / 60;
         let enH = eh + em / 60;
         if (enH <= stH) enH += 24; // 下班時間早於或等於上班時間 → 判定為跨夜班 (+1)
-        const tpl = SHIFT_TEMPLATES[code];
         if (stH !== tpl.startHour || enH !== tpl.endHour) { s.customStart = stH; s.customEnd = enH; }
         else { delete s.customStart; delete s.customEnd; }
       } else { delete s.customStart; delete s.customEnd; }
@@ -3911,7 +3912,7 @@ end $$;`;
                         <label class="font-semibold text-slate-700">班別模板</label>
                         <button type="button" onclick="App.sched.editingShiftModal=null;App.mainTab='SETTINGS';App.storeSettings.subTab='SHIFTS';render()" class="text-[11px] text-[#0F766E] hover:underline font-semibold cursor-pointer">⚙️ 自訂班別模板</button>
                       </div>
-                      <select id="bar-edit-code" onchange="const t=SHIFT_TEMPLATES[this.value];if(t&&!t.isOff&&this.value!=='SPLIT'){document.getElementById('bar-edit-start').value=fmtHour(t.startHour);document.getElementById('bar-edit-end').value=fmtHour(t.endHour);}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold">
+                      <select id="bar-edit-code" onchange="const t=SHIFT_TEMPLATES[this.value];const isCS=this.value==='SPLIT'&&t&&t.startHour===10.5&&t.endHour===21.5&&String(t.name||'').includes('兩頭班');if(t&&!t.isOff&&!isCS){document.getElementById('bar-edit-start').value=fmtHour(t.startHour);document.getElementById('bar-edit-end').value=fmtHour(t.endHour);}" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold">
                         ${Object.keys(SHIFT_TEMPLATES).map(code => `<option value="${code}" ${s.shiftCode===code?'selected':''}>${SHIFT_TEMPLATES[code].name} (${SHIFT_TEMPLATES[code].timeRange})</option>`).join('')}
                       </select>
                     </div>
