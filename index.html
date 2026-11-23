@@ -531,20 +531,26 @@
       },
 
       auth: {
-        loggedIn: true,
+        loggedIn: false,
+        isDemo: false,
         authMode: 'LOGIN', // LOGIN | REGISTER
-        email: 'boss@shanbei-tea.tw',
-        companyName: '山焙森茶餐飲有限公司',
-        ownerName: '吳承翰',
-        twoFactorEnabled: true,
-        lineAdminBound: true,
-        lastLoginAt: '2026-11-21 09:15',
-        loginDraft: { email: 'boss@shanbei-tea.tw', password: '••••••••••••', companyName: '', storeCount: 1 },
+        authBusy: false,
+        authError: '',
+        email: '',
+        companyName: '',
+        ownerName: '',
+        subStatus: 'DEMO', // DEMO | TRIAL | ACTIVE | SUSPENDED
+        planCode: 'PRO', // STARTER | PRO | ENTERPRISE
+        maxStores: 1,
+        trialEndsAt: null,
+        paidUntil: null,
+        twoFactorEnabled: false,
+        lineAdminBound: false,
+        lastLoginAt: '',
+        loginDraft: { email: '', password: '', companyName: '', storeCount: 1 },
         pwdDraft: { current: '', next: '', confirm: '' },
         sessions: [
-          { id: 'sess-1', device: 'MacBook Pro · Chrome 131', location: '台北市中山區 (114.36.82.19)', lastActive: '目前使用中', current: true },
-          { id: 'sess-2', device: '門市 iPad POS · Safari', location: '中山南西店 Wi-Fi', lastActive: '18 分鐘前', current: false },
-          { id: 'sess-3', device: 'iPhone 16 Pro · LINE LIFF', location: '台北市信義區', lastActive: '1 小時前', current: false },
+          { id: 'sess-1', device: '目前瀏覽器連線', location: '台灣', lastActive: '目前使用中', current: true },
         ],
       },
 
@@ -625,44 +631,354 @@
       return { plan: p, unit, stores, monthlyTotal: unit * stores, chargeNow: cycle === 'YEARLY' ? unit * stores * 12 : unit * stores };
     }
 
-    function submitAuthForm(e) {
-      e.preventDefault();
-      const d = App.auth.loginDraft;
-      if (!d.email.trim()) { App.toast = '請輸入登入 Email 帳號。'; render(); return; }
-      App.auth.email = d.email.trim();
-      const isRegister = App.auth.authMode === 'REGISTER';
-      if (isRegister && d.companyName.trim()) {
-        const brandName = d.companyName.trim();
-        const storeCnt = Math.max(1, Number(d.storeCount) || 1);
-        App.auth.companyName = brandName;
-        App.billing.storeCount = storeCnt;
-        // 為新註冊餐飲品牌自動建立獨立雲端空間（多品牌完全隔離）
-        const newBrandId = 'brand-' + Date.now().toString(36);
-        App.multiStore.brandId = newBrandId;
-        App.multiStore.stores = Array.from({ length: Math.min(storeCnt, 10) }, (_, idx) => ({
-          id: 'store-0' + (idx + 1),
-          name: idx === 0 ? `${brandName}・總店` : `${brandName}・第 ${idx + 1} 分店`,
-          city: '台灣',
+    const AUTH_SESSION_KEY = 'shiftcraft_auth_session_v1';
+
+    async function hashAccountPassword(email, password) {
+      const normalized = `shiftcraft-v1:${String(email || '').trim().toLowerCase()}:${String(password || '')}`;
+      if (window.crypto && window.crypto.subtle) {
+        const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+      // Fallback hash if crypto.subtle unavailable
+      let h = 2166136261;
+      for (let i = 0; i < normalized.length; i++) {
+        h ^= normalized.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return 'fb-' + (h >>> 0).toString(16);
+    }
+
+    function getAccountSupabaseClient() {
+      if (_sbClient) return _sbClient;
+      const url = (App.cloud && App.cloud.url) || DEFAULT_CLOUD_CONFIG.url;
+      const key = (App.cloud && App.cloud.anonKey) || DEFAULT_CLOUD_CONFIG.anonKey;
+      if (!url || !key || typeof window.supabase === 'undefined') return null;
+      _sbClient = window.supabase.createClient(url, key);
+      return _sbClient;
+    }
+
+    function formatIsoDateTW(isoStr) {
+      if (!isoStr) return '—';
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return '—';
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function getAccountEntitlement() {
+      const a = App.auth;
+      const planCode = (a.planCode || App.billing.planCode || 'PRO').toUpperCase();
+      const planObj = SAAS_PLANS.find(p => p.code === planCode) || SAAS_PLANS[1];
+      if (a.isDemo || a.subStatus === 'DEMO') {
+        return {
+          isDemo: true,
+          subStatus: 'DEMO',
+          planCode: planObj.code,
+          planName: planObj.name,
+          expiresAt: null,
+          expiresDateStr: '體驗模式無期限',
+          daysLeft: 999,
+          isExpired: false,
+          maxStores: 10,
+          maxStaffPerStore: Infinity,
+          canUseScheduling: true,
+          canUseLeaveApproval: true,
+        };
+      }
+      const status = (a.subStatus || 'TRIAL').toUpperCase();
+      const expiryIso = (status === 'ACTIVE' && a.paidUntil) ? a.paidUntil : a.trialEndsAt;
+      const expiryMs = expiryIso ? new Date(expiryIso).getTime() : 0;
+      const daysLeft = expiryMs ? Math.ceil((expiryMs - Date.now()) / 86400000) : 0;
+      const isExpired = status === 'SUSPENDED' || (expiryMs > 0 && daysLeft <= 0);
+      const effectivePlan = status === 'TRIAL' ? 'PRO' : planCode;
+      const maxStaffPerStore = effectivePlan === 'STARTER' ? 15 : (effectivePlan === 'PRO' ? 30 : Infinity);
+      return {
+        isDemo: false,
+        subStatus: status,
+        planCode,
+        planName: planObj.name,
+        expiresAt: expiryIso,
+        expiresDateStr: formatIsoDateTW(expiryIso),
+        daysLeft,
+        isExpired,
+        maxStores: Math.max(1, Number(a.maxStores) || 1),
+        maxStaffPerStore,
+        canUseScheduling: effectivePlan !== 'STARTER',
+        canUseLeaveApproval: effectivePlan !== 'STARTER',
+      };
+    }
+
+    function saveAuthSession() {
+      try {
+        if (!App.auth.loggedIn || App.auth.isDemo) {
+          localStorage.removeItem(AUTH_SESSION_KEY);
+          return;
+        }
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+          email: App.auth.email,
+          brandId: App.multiStore.brandId,
+          companyName: App.auth.companyName,
+          planCode: App.auth.planCode,
+          subStatus: App.auth.subStatus,
+          billingCycle: App.billing.billingCycle,
+          maxStores: App.auth.maxStores,
+          trialEndsAt: App.auth.trialEndsAt,
+          paidUntil: App.auth.paidUntil,
+          lastLoginAt: App.auth.lastLoginAt,
         }));
-        App.multiStore.activeStoreId = 'store-01';
-        App.multiStore.storeData = {};
-        App.storeSettings.name = App.multiStore.stores[0].name;
-        App.storeSettings.brandName = brandName;
+      } catch (e) {}
+    }
+
+    function applyAccountRecord(acc) {
+      App.auth.loggedIn = true;
+      App.auth.isDemo = false;
+      App.auth.authError = '';
+      App.auth.email = acc.email;
+      App.auth.companyName = acc.company_name || acc.companyName || '我的餐飲品牌';
+      App.auth.ownerName = App.auth.ownerName || '品牌負責人';
+      App.auth.planCode = (acc.plan_code || acc.planCode || 'PRO').toUpperCase();
+      App.auth.subStatus = (acc.sub_status || acc.subStatus || 'TRIAL').toUpperCase();
+      App.auth.maxStores = Math.max(1, Number(acc.max_stores || acc.maxStores) || 1);
+      App.auth.trialEndsAt = acc.trial_ends_at || acc.trialEndsAt || null;
+      App.auth.paidUntil = acc.paid_until || acc.paidUntil || null;
+      App.auth.lastLoginAt = formatIsoDateTW(acc.last_login_at || new Date().toISOString());
+
+      App.billing.planCode = App.auth.planCode;
+      App.billing.billingCycle = (acc.billing_cycle || acc.billingCycle || 'MONTHLY').toUpperCase();
+      App.billing.storeCount = App.auth.maxStores;
+      const ent = getAccountEntitlement();
+      App.billing.nextChargeDate = ent.expiresDateStr;
+
+      const brandId = acc.brand_id || acc.brandId;
+      if (brandId) {
+        App.multiStore.brandId = brandId;
         try {
           localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({
             url: App.cloud.url || DEFAULT_CLOUD_CONFIG.url,
             anonKey: App.cloud.anonKey || DEFAULT_CLOUD_CONFIG.anonKey,
-            brandId: newBrandId,
+            brandId,
           }));
         } catch (err) {}
       }
+      if (ent.isExpired) {
+        App.mainTab = 'BILLING';
+        App.billing.subTab = 'PLANS';
+      } else if (!ent.canUseScheduling && App.mainTab === 'SCHED') {
+        App.mainTab = 'ATTENDANCE';
+      }
+      saveAuthSession();
+    }
+
+    async function refreshAccountSubscription(showToast) {
+      if (!App.auth.loggedIn || App.auth.isDemo || !App.auth.email) return;
+      const sb = getAccountSupabaseClient();
+      if (!sb) return;
+      try {
+        const { data, error } = await sb
+          .from('shiftcraft_accounts')
+          .select('*')
+          .eq('email', App.auth.email.trim().toLowerCase())
+          .maybeSingle();
+        if (error) throw error;
+        if (data) {
+          applyAccountRecord(data);
+          if (showToast) {
+            const ent = getAccountEntitlement();
+            App.toast = ent.isExpired
+              ? `已更新帳號狀態：目前方案已於 ${ent.expiresDateStr} 到期，請續約開通。`
+              : `已更新帳號狀態：${ent.planName}（${ent.subStatus === 'ACTIVE' ? '正式訂閱中' : '免費試用中'}，到期日 ${ent.expiresDateStr}，剩餘 ${ent.daysLeft} 天）`;
+          }
+          render();
+        }
+      } catch (err) {
+        if (showToast) {
+          App.toast = '無法讀取最新訂閱狀態，請稍後再試。';
+          render();
+        }
+      }
+    }
+
+    function restoreAuthSession() {
+      // 若為員工從 LINE 開啟，不強制跳轉登入頁
+      const isLineBoot = !!(App.lineLiff && App.lineLiff.bootLoading);
+      if (isLineBoot) return;
+      try {
+        const raw = localStorage.getItem(AUTH_SESSION_KEY);
+        if (raw) {
+          const sess = JSON.parse(raw);
+          if (sess && sess.email && sess.brandId) {
+            applyAccountRecord(sess);
+            // 背景向 Supabase 同步最新方案與到期日
+            setTimeout(() => refreshAccountSubscription(false), 400);
+          }
+        }
+      } catch (e) {}
+    }
+
+    function enterDemoAccount() {
       App.auth.loggedIn = true;
-      App.auth.lastLoginAt = new Date().toLocaleTimeString('zh-TW', { hour12: false }) + ' 剛剛';
-      App.toast = isRegister
-        ? `歡迎加入班匠！「${App.auth.companyName}」專屬雲端多店空間已建立，14 天試用啟動！`
-        : `歡迎回來，已使用「${App.auth.email}」登入營運後台。`;
+      App.auth.isDemo = true;
+      App.auth.subStatus = 'DEMO';
+      App.auth.planCode = 'PRO';
+      App.auth.email = 'boss@shanbei-tea.tw';
+      App.auth.companyName = '山焙森茶餐飲有限公司（體驗帳號）';
+      App.auth.ownerName = '吳承翰';
+      App.auth.maxStores = 10;
+      App.auth.authError = '';
+      App.auth.lastLoginAt = new Date().toLocaleTimeString('zh-TW', { hour12: false }) + ' 體驗模式';
+      App.billing.planCode = 'PRO';
+      App.billing.storeCount = App.multiStore.stores.length || 2;
+      App.multiStore.brandId = DEFAULT_CLOUD_CONFIG.brandId;
+      try {
+        localStorage.removeItem(AUTH_SESSION_KEY);
+        localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(DEFAULT_CLOUD_CONFIG));
+      } catch (e) {}
+      App.toast = '已進入示範體驗帳號，所有功能皆可自由試玩！';
       render();
-      if (isRegister) { initCloudSync(false); }
+      initCloudSync(false);
+    }
+
+    async function submitAuthForm(e) {
+      e.preventDefault();
+      if (App.auth.authBusy) return;
+      const d = App.auth.loginDraft;
+      const email = (d.email || '').trim().toLowerCase();
+      const password = String(d.password || '');
+      const isRegister = App.auth.authMode === 'REGISTER';
+
+      if (!email || !email.includes('@')) {
+        App.auth.authError = '請輸入正確的 Email 帳號。';
+        render();
+        return;
+      }
+      if (password.length < 6) {
+        App.auth.authError = '密碼長度至少需要 6 碼。';
+        render();
+        return;
+      }
+      if (isRegister && !(d.companyName || '').trim()) {
+        App.auth.authError = '請輸入餐飲品牌或門市名稱。';
+        render();
+        return;
+      }
+
+      const sb = getAccountSupabaseClient();
+      if (!sb) {
+        App.auth.authError = '目前無法連線雲端帳號服務，請檢查網路後重試。';
+        render();
+        return;
+      }
+
+      App.auth.authBusy = true;
+      App.auth.authError = '';
+      render();
+
+      try {
+        const pwHash = await hashAccountPassword(email, password);
+        if (isRegister) {
+          const { data: existing, error: checkErr } = await sb
+            .from('shiftcraft_accounts')
+            .select('email')
+            .eq('email', email)
+            .maybeSingle();
+          if (checkErr) throw checkErr;
+          if (existing) {
+            App.auth.authBusy = false;
+            App.auth.authError = '這個 Email 已經註冊過了，請切到「業者帳號登入」直接登入。';
+            render();
+            return;
+          }
+
+          const brandName = d.companyName.trim();
+          const storeCnt = Math.max(1, Math.min(50, Number(d.storeCount) || 1));
+          const newBrandId = 'brand-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+          const trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString();
+
+          const newAcc = {
+            email,
+            password_hash: pwHash,
+            brand_id: newBrandId,
+            company_name: brandName,
+            plan_code: 'PRO',
+            sub_status: 'TRIAL',
+            billing_cycle: 'MONTHLY',
+            max_stores: storeCnt,
+            trial_ends_at: trialEndsAt,
+            paid_until: null,
+            note: '官網自助註冊 14 天試用',
+            last_login_at: new Date().toISOString(),
+          };
+
+          const { error: insErr } = await sb.from('shiftcraft_accounts').insert(newAcc);
+          if (insErr) throw insErr;
+
+          App.multiStore.stores = Array.from({ length: Math.min(storeCnt, 10) }, (_, idx) => ({
+            id: 'store-0' + (idx + 1),
+            name: idx === 0 ? `${brandName}・總店` : `${brandName}・第 ${idx + 1} 分店`,
+            city: '台灣',
+          }));
+          App.multiStore.activeStoreId = 'store-01';
+          App.multiStore.storeData = {};
+          App.storeSettings.name = App.multiStore.stores[0].name;
+          App.storeSettings.brandName = brandName;
+
+          applyAccountRecord(newAcc);
+          App.auth.authBusy = false;
+          App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+          App.toast = `🎉 歡迎加入班匠！「${brandName}」14 天免費試用已啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），之後用這組信箱密碼在任何裝置都能登入！`;
+          render();
+          await initCloudSync(false);
+          for (const stMeta of App.multiStore.stores) {
+            await pushStoreToCloud(stMeta.id);
+          }
+        } else {
+          // LOGIN
+          const { data: acc, error: selErr } = await sb
+            .from('shiftcraft_accounts')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+          if (selErr) throw selErr;
+          if (!acc) {
+            App.auth.authBusy = false;
+            App.auth.authError = '找不到這個 Email 帳號，請確認信箱或先點「免費試用 14 天」註冊。';
+            render();
+            return;
+          }
+          if (acc.password_hash !== pwHash) {
+            App.auth.authBusy = false;
+            App.auth.authError = '密碼不正確，請重新輸入。';
+            render();
+            return;
+          }
+
+          await sb
+            .from('shiftcraft_accounts')
+            .update({ last_login_at: new Date().toISOString() })
+            .eq('email', email);
+
+          applyAccountRecord(acc);
+          App.auth.authBusy = false;
+          App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+          const ent = getAccountEntitlement();
+          App.toast = ent.isExpired
+            ? `歡迎回來「${App.auth.companyName}」！您的方案已於 ${ent.expiresDateStr} 到期，資料皆已安全保留，請選擇方案續用。`
+            : `歡迎回來「${App.auth.companyName}」！目前為 ${ent.planName}（剩餘 ${ent.daysLeft} 天）。`;
+          render();
+          await initCloudSync(false);
+        }
+      } catch (err) {
+        App.auth.authBusy = false;
+        const msg = (err && err.message) ? err.message : String(err);
+        if (msg.includes('shiftcraft_accounts') || msg.includes('does not exist') || msg.includes('42P01')) {
+          App.auth.authError = '雲端帳號資料表尚未建立，請管理員先在 Supabase 執行建表腳本。';
+        } else {
+          App.auth.authError = '連線發生錯誤：' + msg;
+        }
+        render();
+      }
     }
 
     function syncBoundLineEmployee() {
@@ -998,7 +1314,15 @@ end $$;`;
 
     function addNewBranchStore(e) {
       if (e) e.preventDefault();
+      const ent = getAccountEntitlement();
       const ms = App.multiStore;
+      if (!ent.isDemo && ms.stores.length >= ent.maxStores) {
+        App.toast = `目前已達訂閱門市上限（${ent.maxStores} 間門市），請前往「帳號與訂閱」增加門市數後再新增分店。`;
+        App.mainTab = 'BILLING';
+        App.billing.subTab = 'PLANS';
+        render();
+        return;
+      }
       const name = (ms.newBranchName || '').trim();
       const city = (ms.newBranchCity || '').trim() || '台灣';
       if (!name) { App.toast = '請輸入新分店名稱。'; render(); return; }
@@ -1257,16 +1581,37 @@ end $$;`;
 
     function logoutToAuthScreen() {
       App.auth.loggedIn = false;
+      App.auth.isDemo = false;
       App.auth.authMode = 'LOGIN';
-      App.toast = '已安全登出系統，您可重新登入或測試新餐飲品牌註冊流程。';
+      App.auth.authError = '';
+      App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+      try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+      App.toast = '已安全登出系統。';
       render();
     }
 
-    function updateAccountPassword(e) {
+    async function updateAccountPassword(e) {
       e.preventDefault();
       const p = App.auth.pwdDraft;
       if (!p.next || p.next.length < 6) { App.toast = '新密碼長度至少須 6 碼。'; render(); return; }
       if (p.next !== p.confirm) { App.toast = '兩次輸入的新密碼不一致，請重新確認。'; render(); return; }
+      if (!App.auth.isDemo && App.auth.email) {
+        const sb = getAccountSupabaseClient();
+        if (sb) {
+          try {
+            const newHash = await hashAccountPassword(App.auth.email, p.next);
+            const { error } = await sb
+              .from('shiftcraft_accounts')
+              .update({ password_hash: newHash })
+              .eq('email', App.auth.email.trim().toLowerCase());
+            if (error) throw error;
+          } catch (err) {
+            App.toast = '密碼更新失敗，請稍後再試：' + (err.message || err);
+            render();
+            return;
+          }
+        }
+      }
       App.auth.pwdDraft = { current: '', next: '', confirm: '' };
       App.toast = '帳號密碼已更新，下次登入請使用新密碼。';
       render();
@@ -1700,6 +2045,12 @@ end $$;`;
         App.toast = `已更新「${f.name}」人資檔案，排班與薪資模組已同步。`;
         App.hr.editingId = null;
       } else {
+        const ent = getAccountEntitlement();
+        if (!ent.isDemo && App.employees.length >= ent.maxStaffPerStore) {
+          App.toast = `目前為「${ent.planName}」，單店上限 ${ent.maxStaffPerStore} 名員工；請前往「帳號與訂閱」升級方案即可新增更多員工。`;
+          render();
+          return;
+        }
         const newId = 'emp-' + Date.now();
         const newEmp = { ...JSON.parse(JSON.stringify(f)), id: newId, maxHours: f.type === 'FT' ? 40 : 30, lineName: `${f.name} (${f.type})` };
         App.employees.push(newEmp);
@@ -2420,6 +2771,72 @@ end $$;`;
     // ============================================================================
     // 5. 全域 App Shell 渲染引擎 (Sidebar + Topbar + Workspace + Slide-over)
     // ============================================================================
+    function renderSubscriptionBanner(ent) {
+      if (!ent || ent.isDemo || ent.isExpired) return '';
+      if (ent.subStatus === 'TRIAL') {
+        const urgent = ent.daysLeft <= 3;
+        return `
+          <div class="mb-4 rounded-xl border px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${urgent ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-teal-50/80 border-teal-200 text-teal-900'}">
+            <div class="flex items-center gap-2">
+              <span class="font-bold">${urgent ? '⏰ 免費試用即將到期' : '🎉 14 天免費試用中'}</span>
+              <span>目前享有完整進階功能體驗 · 剩餘 <strong class="mono-num">${Math.max(0, ent.daysLeft)}</strong> 天（到期日 <span class="mono-num">${ent.expiresDateStr}</span>）</span>
+            </div>
+            <button onclick="App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="px-3 py-1 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">查看方案 / 升級正式版</button>
+          </div>
+        `;
+      }
+      if (ent.subStatus === 'ACTIVE' && ent.daysLeft <= 7) {
+        return `
+          <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
+            <div>
+              <strong>⏰ 訂閱即將到期：</strong>您的「${ent.planName}」將於 <strong class="mono-num">${Math.max(0, ent.daysLeft)}</strong> 天後到期（<span class="mono-num">${ent.expiresDateStr}</span>），請提前續約以免影響門市使用。
+            </div>
+            <button onclick="App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold cursor-pointer">前往續約</button>
+          </div>
+        `;
+      }
+      return '';
+    }
+
+    function renderSubscriptionExpiredGate(ent) {
+      const isTrial = ent.subStatus === 'TRIAL';
+      return `
+        <div class="max-w-lg mx-auto my-8 bg-white border border-rose-200 rounded-2xl p-7 text-center space-y-4 shadow-xs">
+          <div class="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto text-xl">⏰</div>
+          <div class="space-y-1">
+            <h2 class="text-lg font-bold text-slate-900">${isTrial ? '14 天免費試用已結束' : '訂閱方案已到期'}</h2>
+            <p class="text-xs text-slate-500">品牌「${App.auth.companyName}」到期日：<span class="mono-num font-semibold text-slate-700">${ent.expiresDateStr}</span></p>
+          </div>
+          <div class="rounded-xl bg-slate-50 border border-slate-200/80 p-3.5 text-xs text-slate-600 leading-relaxed">
+            請放心，您的所有門市班表、員工資料與打卡紀錄都已<strong>安全保留在雲端</strong>。完成續約開通後，所有資料會立刻恢復使用。
+          </div>
+          <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1 text-xs font-bold">
+            <button onclick="App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white cursor-pointer">前往選擇方案 / 續約</button>
+            <button onclick="refreshAccountSubscription(true)" class="h-9 px-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">🔄 我已付款，重新檢查開通狀態</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderPlanUpgradeGate(currentNav, ent) {
+      return `
+        <div class="max-w-lg mx-auto my-8 bg-white border border-teal-200 rounded-2xl p-7 text-center space-y-4 shadow-xs">
+          <div class="w-12 h-12 rounded-2xl bg-teal-50 text-[#0F766E] flex items-center justify-center mx-auto text-xl">🔒</div>
+          <div class="space-y-1">
+            <h2 class="text-lg font-bold text-slate-900">「${currentNav.label}」為進階方案以上專屬功能</h2>
+            <p class="text-xs text-slate-500">您目前為「${ent.planName}」（含打卡、算薪、人事建檔與單店 15 人額度）。</p>
+          </div>
+          <div class="rounded-xl bg-teal-50/70 border border-teal-200/80 p-3.5 text-xs text-teal-900 leading-relaxed">
+            升級至 <strong>進階方案（NT$1,290／店／月）</strong> 即可立即解鎖 24 小時 AI 智慧排班、台灣勞基法合規檢查、LINE 請假調班簽核與單店 30 名員工額度。
+          </div>
+          <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1 text-xs font-bold">
+            <button onclick="App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white cursor-pointer">查看方案並升級</button>
+            <button onclick="App.mainTab='ATTENDANCE';render()" class="h-9 px-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">回到打卡與補卡</button>
+          </div>
+        </div>
+      `;
+    }
+
     function render() {
       if (App.lineLiff && App.lineLiff.bootLoading) {
         document.getElementById('app').innerHTML = `
@@ -2438,17 +2855,18 @@ end $$;`;
       const st = App.storeSettings;
       const foreignCnt = App.employees.filter(e => e.nationalityType === 'FOREIGN').length;
       const activeRoleMeta = STORE_ROLE_DEFS.find(r => r.code === st.activeRole) || STORE_ROLE_DEFS[0];
+      const ent = getAccountEntitlement();
 
-      if (!App.auth.loggedIn) {
+      if (!App.auth.loggedIn && !App.liffDrawerOpen) {
         document.getElementById('app').innerHTML = renderAuthScreen();
         return;
       }
 
       const NAV_ITEMS = [
-        { key: 'SCHED', label: '排班時間軸', icon: ICONS.calendar, perm: 'schedEdit' },
+        { key: 'SCHED', label: '排班時間軸', icon: ICONS.calendar, perm: 'schedEdit', planLocked: !ent.isDemo && !ent.canUseScheduling },
         { key: 'HR', label: '人事建檔', icon: ICONS.users, perm: 'hrDocs' },
         { key: 'PAYROLL', label: '薪資結算', icon: ICONS.wallet, perm: 'payrollManage' },
-        { key: 'LIFF_LEAVE', label: '請假調班簽核', icon: ICONS.inbox, perm: 'approveLeave', badge: pendingApprovals },
+        { key: 'LIFF_LEAVE', label: '請假調班簽核', icon: ICONS.inbox, perm: 'approveLeave', badge: pendingApprovals, planLocked: !ent.isDemo && !ent.canUseLeaveApproval },
         { key: 'ATTENDANCE', label: '打卡與補卡', icon: ICONS.clock, perm: 'approvePunch', badge: pendingMissed },
         { key: 'SETTINGS', label: '店鋪與權限', icon: ICONS.settings, perm: 'settingsAdmin' },
         { key: 'BILLING', label: '帳號與訂閱', icon: ICONS.creditCard, perm: 'settingsAdmin' },
@@ -2533,8 +2951,8 @@ end $$;`;
                         <span>${item.label}</span>
                       </span>
                       <span class="flex items-center gap-1">
-                        ${!locked && item.badge > 0 ? `<span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold mono-num ${active ? 'bg-white text-[#0F766E]' : 'bg-rose-500 text-white'}">${item.badge}</span>` : ''}
-                        ${locked ? `<span class="${active ? 'text-white/80' : 'text-slate-400'}">${ICONS.lock}</span>` : ''}
+                        ${!locked && !item.planLocked && item.badge > 0 ? `<span class="px-1.5 py-0.5 rounded-full text-[10px] font-bold mono-num ${active ? 'bg-white text-[#0F766E]' : 'bg-rose-500 text-white'}">${item.badge}</span>` : ''}
+                        ${(locked || item.planLocked) ? `<span class="${active ? 'text-white/80' : 'text-slate-400'}">${ICONS.lock}</span>` : ''}
                       </span>
                     </button>
                   `;
@@ -2554,8 +2972,10 @@ end $$;`;
               <div class="pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 text-[11px]">
                 ${hasRolePerm('settingsAdmin') ? `
                   <button onclick="App.mainTab='BILLING';render()" class="min-w-0 text-left cursor-pointer group">
-                    <div class="font-bold text-slate-800 group-hover:text-[#0F766E] truncate">${App.auth.email}</div>
-                    <div class="text-[10px] text-[#0F766E] font-semibold mono-num">${App.billing.planCode} · ${App.billing.storeCount} 店訂閱中</div>
+                    <div class="font-bold text-slate-800 group-hover:text-[#0F766E] truncate">${App.auth.email || '體驗帳號'}</div>
+                    <div class="text-[10px] font-semibold mono-num ${ent.isExpired ? 'text-rose-600' : 'text-[#0F766E]'}">
+                      ${ent.isDemo ? '體驗預覽模式' : (ent.isExpired ? '方案已到期 · 點此續約' : `${ent.planName} · ${ent.subStatus === 'ACTIVE' ? '剩 ' + ent.daysLeft + ' 天' : '試用剩 ' + ent.daysLeft + ' 天'}`)}
+                    </div>
                   </button>
                 ` : `
                   <div class="min-w-0">
@@ -2619,15 +3039,23 @@ end $$;`;
 
             <!-- 內容主畫布 -->
             <main class="flex-1 p-4 sm:p-6 max-w-[1440px] w-full mx-auto">
-              ${!canViewCurrent ? renderNoPermissionGate(currentNav, activeRoleMeta, allowedNavs) : `
-                ${App.mainTab === 'SCHED' ? renderSchedulingModule() : ''}
-                ${App.mainTab === 'HR' ? renderHrModule() : ''}
-                ${App.mainTab === 'PAYROLL' ? renderPayrollModule() : ''}
-                ${App.mainTab === 'LIFF_LEAVE' ? renderLiffLeaveModule() : ''}
-                ${App.mainTab === 'ATTENDANCE' ? renderAttendanceModule() : ''}
-                ${App.mainTab === 'SETTINGS' ? renderStoreSettingsModule() : ''}
-                ${App.mainTab === 'BILLING' ? renderBillingModule() : ''}
-              `}
+              ${renderSubscriptionBanner(ent)}
+              ${!canViewCurrent
+                ? renderNoPermissionGate(currentNav, activeRoleMeta, allowedNavs)
+                : (ent.isExpired && App.mainTab !== 'BILLING')
+                  ? renderSubscriptionExpiredGate(ent)
+                  : currentNav.planLocked
+                    ? renderPlanUpgradeGate(currentNav, ent)
+                    : `
+                      ${App.mainTab === 'SCHED' ? renderSchedulingModule() : ''}
+                      ${App.mainTab === 'HR' ? renderHrModule() : ''}
+                      ${App.mainTab === 'PAYROLL' ? renderPayrollModule() : ''}
+                      ${App.mainTab === 'LIFF_LEAVE' ? renderLiffLeaveModule() : ''}
+                      ${App.mainTab === 'ATTENDANCE' ? renderAttendanceModule() : ''}
+                      ${App.mainTab === 'SETTINGS' ? renderStoreSettingsModule() : ''}
+                      ${App.mainTab === 'BILLING' ? renderBillingModule() : ''}
+                    `
+              }
             </main>
           </div>
         </div>
@@ -4099,7 +4527,7 @@ end $$;`;
               </div>
 
               <div class="space-y-3 pt-4">
-                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 text-teal-100 text-xs font-semibold">月費 NT$1,290 起 · 支援綠界 / 藍新 / Stripe 定期定額</span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 text-teal-100 text-xs font-semibold">月費 NT$690 起 · 14 天免費試用免綁卡</span>
                 <h2 class="text-2xl sm:text-3xl font-bold leading-snug">排班、打卡、LINE 簽核到銀行薪轉，一站式餐飲門市管理</h2>
                 <p class="text-sm text-teal-100/90 leading-relaxed">免導入硬體、手機開通即用。內建台灣勞基法規合規檢查、外籍生工時提醒與店長休假副店代理簽核。</p>
               </div>
@@ -4130,14 +4558,20 @@ end $$;`;
           <div class="flex-1 flex items-center justify-center p-6 sm:p-10">
             <div class="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm p-6 sm:p-8 space-y-5 text-xs">
               <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl font-bold text-xs">
-                <button onclick="App.auth.authMode='LOGIN';render()" class="py-2 rounded-lg cursor-pointer transition ${!isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">業者帳號登入</button>
-                <button onclick="App.auth.authMode='REGISTER';render()" class="py-2 rounded-lg cursor-pointer transition ${isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">免費試用 14 天</button>
+                <button onclick="App.auth.authMode='LOGIN';App.auth.authError='';render()" class="py-2 rounded-lg cursor-pointer transition ${!isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">業者帳號登入</button>
+                <button onclick="App.auth.authMode='REGISTER';App.auth.authError='';render()" class="py-2 rounded-lg cursor-pointer transition ${isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">免費試用 14 天</button>
               </div>
 
               <div>
                 <h1 class="text-lg font-bold text-slate-900">${isReg ? '建立餐飲品牌試用帳號' : '登入班匠營運管理後台'}</h1>
-                <p class="text-slate-500 mt-0.5">${isReg ? '免先扣款，14 天內隨時可於後台綁定金流切換月費方案' : '請輸入品牌負責人或店長帳號密碼'}</p>
+                <p class="text-slate-500 mt-0.5">${isReg ? '免先扣款，14 天內免費體驗完整功能，到期前隨時可切換月費方案' : '請輸入品牌負責人或店長帳號密碼'}</p>
               </div>
+
+              ${a.authError ? `
+                <div class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-rose-700 font-semibold leading-relaxed">
+                  ⚠️ ${a.authError}
+                </div>
+              ` : ''}
 
               <form onsubmit="submitAuthForm(event)" class="space-y-3.5">
                 ${isReg ? `
@@ -4159,13 +4593,13 @@ end $$;`;
                 <div>
                   <div class="flex items-center justify-between mb-1">
                     <label class="font-semibold text-slate-700">密碼 *</label>
-                    ${!isReg ? `<button type="button" onclick="App.toast='已寄送密碼重設連結至 '+App.auth.loginDraft.email;render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
+                    ${!isReg ? `<button type="button" onclick="App.toast='如需重設密碼，請聯繫客服 service@shiftcraftai.com 協助處理。';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
                   </div>
                   <input type="password" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value" placeholder="請輸入至少 6 碼密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
                 </div>
 
-                <button type="submit" class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold text-xs cursor-pointer shadow-xs">
-                  ${isReg ? '立即開通 14 天免費試用' : '登入營運管理後台'}
+                <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
+                  ${a.authBusy ? '連線處理中…' : (isReg ? '立即開通 14 天免費試用' : '登入營運管理後台')}
                 </button>
               </form>
 
@@ -4179,8 +4613,8 @@ end $$;`;
               </button>
 
               <div class="rounded-lg bg-slate-50 border border-slate-200/80 p-3 text-[11px] text-slate-600 flex items-center justify-between">
-                <span>體驗帳號：<strong class="mono-num text-slate-800">boss@shanbei-tea.tw</strong></span>
-                <button type="button" onclick="App.auth.loginDraft.email='boss@shanbei-tea.tw';App.auth.loggedIn=true;App.toast='已一鍵進入體驗後台。';render()" class="text-[#0F766E] font-bold hover:underline cursor-pointer">一鍵進入</button>
+                <span>想先逛逛功能？免註冊體驗示範後台</span>
+                <button type="button" onclick="enterDemoAccount()" class="text-[#0F766E] font-bold hover:underline cursor-pointer">一鍵體驗</button>
               </div>
             </div>
           </div>
@@ -4199,9 +4633,18 @@ end $$;`;
       const a = App.auth;
       const b = App.billing;
       const calc = getPlanMonthlyTotal();
+      const ent = getAccountEntitlement();
       const activeGw = PAYMENT_GATEWAYS.find(g => g.code === b.gateway) || PAYMENT_GATEWAYS[0];
       const activeGwCfg = b.gatewayConfig[b.gateway];
       const defaultCard = b.cards.find(c => c.isDefault) || b.cards[0];
+      const statusBadge = ent.isDemo
+        ? '<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[11px] font-semibold">體驗帳號預覽模式</span>'
+        : ent.isExpired
+          ? '<span class="px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold">方案已到期</span>'
+          : ent.subStatus === 'ACTIVE'
+            ? '<span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-semibold">正式訂閱中</span>'
+            : '<span class="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 text-[11px] font-semibold">14 天免費試用中</span>';
+      const staffLimitText = ent.maxStaffPerStore === Infinity ? '不限人數' : `${ent.maxStaffPerStore} 人`;
 
       return `
         <div class="space-y-4">
@@ -4211,18 +4654,20 @@ end $$;`;
               <div class="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 text-[#0F766E] flex items-center justify-center font-bold text-base">${ICONS.creditCard}</div>
               <div>
                 <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-sm font-bold text-slate-900">${a.companyName}</span>
-                  <span class="px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[#0F766E] text-[11px] font-bold">${calc.plan.name}</span>
-                  <span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-semibold">定期定額啟用中</span>
+                  <span class="text-sm font-bold text-slate-900">${a.companyName || '我的餐飲品牌'}</span>
+                  <span class="px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[#0F766E] text-[11px] font-bold">${ent.planName}</span>
+                  ${statusBadge}
                 </div>
                 <div class="text-xs text-slate-500 mt-0.5 mono-num">
-                  登入帳號：${a.email} · 訂閱 ${calc.stores} 店 · 下次自動扣款：${b.nextChargeDate}（NT$${calc.monthlyTotal.toLocaleString()} / 月）
+                  帳號：${a.email || '—'} · 門市額度：${App.multiStore.stores.length} / ${ent.maxStores} 店 · 單店人數：${App.employees.length} / ${staffLimitText}
+                  ${!ent.isDemo ? ` · 到期日：${ent.expiresDateStr}（${ent.isExpired ? '已到期' : '剩餘 ' + ent.daysLeft + ' 天'}）` : ''}
                 </div>
               </div>
             </div>
             <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
+              ${!ent.isDemo ? `<button onclick="refreshAccountSubscription(true)" class="h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">🔄 重新檢查開通狀態</button>` : ''}
               <button onclick="App.billing.subTab='PLANS';render()" class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">變更方案 / 門市數</button>
-              <button onclick="logoutToAuthScreen()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">登出 / 預覽登入頁</button>
+              <button onclick="logoutToAuthScreen()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 cursor-pointer">登出</button>
             </div>
           </div>
 
@@ -6256,9 +6701,10 @@ end $$;`;
           },
         }));
       } catch (e) {}
-      scheduleCloudPush();
+      if (App.auth.loggedIn || App.liffDrawerOpen) scheduleCloudPush();
     };
 
+    restoreAuthSession();
     render();
     initRealLineLiff();
     initCloudSync(false);
