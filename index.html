@@ -259,9 +259,10 @@
         roleTitle: isF ? '外籍僑外生 PT・外場/內場' : '正職夥伴',
         type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), healthCertDate: '',
         stations: [], canKey: !isF,
-        baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: isF ? 0 : 3000, posAllow: 0,
-        skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: isF ? 0 : 2000, perfBonus: 0,
-        laborBracket: isF ? 21000 : 36300, nhiBracket: isF ? 28590 : 36300, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
+        baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: 0, posAllow: 0,
+        skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: 0, perfBonus: 0,
+        companyPaysEmployeeIns: false,
+        laborBracket: isF ? 21000 : 32000, nhiBracket: isF ? 28590 : 32000, laborBracketManual: false, nhiBracketManual: false, deps: 0, volPension: 0, annualLeaveH: isF ? 8 : 24,
         bankCode: isF ? '700' : '822', bankName: isF ? '中華郵政 (郵局)' : '中國信託商業銀行',
         accountNumber: '', accountHolder: '', idFrontImg: '', idBackImg: '', workPermitImg: '', bankBookImg: '',
         color: isF ? '#0284C7' : '#0F766E'
@@ -2001,9 +2002,10 @@ end $$;`;
       let totalHours = 0, totalCost = 0, otCost = 0;
 
       for (const emp of App.employees) {
-        const empShifts = FORECASTS.map(f =>
+        const weekDays = getVisibleWeekDays();
+        const empShifts = weekDays.map(f =>
           App.sched.shifts.find(s => s.employeeId === emp.id && s.date === f.date) ||
-          { employeeId: emp.id, date: f.date, shiftCode: 'OFF_REST', station: emp.stations[0] || 'BAR', aiReason: '待排班' }
+          { employeeId: emp.id, date: f.date, shiftCode: 'OFF_REST', station: (emp.stations && emp.stations[0]) || '', aiReason: '待排班' }
         );
         let h = 0, days = 0, streak = 0, maxStreak = 0, hasErr = false;
 
@@ -2059,8 +2061,78 @@ end $$;`;
       return { issues, summaries, totalHours, totalCost, otCost, totalRev, ratio: totalRev > 0 ? ((totalCost / totalRev) * 100).toFixed(1) : null };
     }
 
+    const WEEKDAY_LABELS_ZH = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    function _fmtYmd(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    function _parseYmd(s) {
+      const [y, m, d] = String(s || '2026-11-23').split('-').map(Number);
+      return new Date(y, (m || 1) - 1, d || 1);
+    }
+    function getVisibleWeekDays() {
+      const offset = Number(App.sched && App.sched.weekOffset) || 0;
+      const base = _parseYmd('2026-11-23'); // 週一基準日
+      base.setDate(base.getDate() + offset * 7);
+      const out = [];
+      for (let i = 0; i < 7; i++) {
+        const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+        const dateStr = _fmtYmd(dt);
+        const known = FORECASTS.find(f => f.date === dateStr);
+        const dow = dt.getDay(); // 0=日..6=六
+        out.push({
+          date: dateStr,
+          dayLabel: WEEKDAY_LABELS_ZH[dow],
+          shortDate: `${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')}`,
+          isPeak: dow === 5 || dow === 6 || dow === 0,
+          revenue: known ? known.revenue : 0,
+          dowIdx: (dow + 6) % 7, // 0=週一..6=週日 (對齊 closedWeekdays)
+        });
+      }
+      return out;
+    }
+    function getMonthCalendarDays(anchorDateStr) {
+      const anchor = _parseYmd(anchorDateStr || App.sched.selectedDate || '2026-11-23');
+      const y = anchor.getFullYear(), m = anchor.getMonth();
+      const total = new Date(y, m + 1, 0).getDate();
+      const days = [];
+      for (let day = 1; day <= total; day++) {
+        const dt = new Date(y, m, day);
+        const dow = dt.getDay();
+        days.push({
+          date: _fmtYmd(dt),
+          dayNum: day,
+          dayLabel: WEEKDAY_LABELS_ZH[dow],
+          shortDate: `${String(m + 1).padStart(2, '0')}/${String(day).padStart(2, '0')}`,
+          isPeak: dow === 5 || dow === 6 || dow === 0,
+          dowIdx: (dow + 6) % 7,
+        });
+      }
+      return { year: y, month: m + 1, days };
+    }
+    function shiftSchedWeek(delta) {
+      App.sched.weekOffset = (Number(App.sched.weekOffset) || 0) + delta;
+      const wDays = getVisibleWeekDays();
+      App.sched.selectedDate = wDays[0].date;
+      render();
+    }
+    function jumpSchedToDate(dateStr) {
+      const target = _parseYmd(dateStr);
+      const base = _parseYmd('2026-11-23');
+      const diffDays = Math.floor((target - base) / 86400000);
+      App.sched.weekOffset = Math.floor(diffDays / 7);
+      App.sched.selectedDate = dateStr;
+      App.sched.viewMode = 'DAY_TIMELINE';
+      render();
+    }
+
     function getEffectiveDayConfig(date) {
-      return (App.sched && App.sched.dayConfig && App.sched.dayConfig[date]) || { isClosed: false };
+      if (App.sched && App.sched.dayConfig && App.sched.dayConfig[date]) {
+        return App.sched.dayConfig[date];
+      }
+      const dt = _parseYmd(date);
+      const dowIdx = (dt.getDay() + 6) % 7;
+      const closedList = (App.storeSettings && App.storeSettings.closedWeekdays) || [];
+      return { isClosed: closedList.includes(dowIdx) };
     }
 
     function getDayEstimatedRevenue(date) {
@@ -2214,6 +2286,9 @@ end $$;`;
     }
 
     function toggleDayClosed(date) {
+      if (!App.sched.dayConfig[date]) {
+        App.sched.dayConfig[date] = { isClosed: getEffectiveDayConfig(date).isClosed };
+      }
       const cfg = App.sched.dayConfig[date];
       cfg.isClosed = !cfg.isClosed;
       App.toast = cfg.isClosed ? `已將 ${date.slice(5)} 設為當日店休` : `已恢復 ${date.slice(5)} 正常營業`;
@@ -2496,8 +2571,10 @@ end $$;`;
       const grossPay = basePay + allowTotal + (att.bonus||0) + otPay + holidayPay;
       const laborB = emp.laborBracket || emp.bracket || 28590;
       const nhiB = emp.nhiBracket || emp.bracket || 28590;
-      const laborEmp = Math.round(laborB * 0.125 * 0.20);
-      const nhiEmp = Math.round(nhiB * 0.0517 * 0.30 * (1 + (emp.deps||0)));
+      const companyPaysIns = Boolean(emp.companyPaysEmployeeIns);
+      const laborEmp = companyPaysIns ? 0 : Math.round(laborB * 0.125 * 0.20);
+      const nhiEmp = companyPaysIns ? 0 : Math.round(nhiB * 0.0517 * 0.30 * (1 + (emp.deps||0)));
+      if (companyPaysIns) notes.push('依約定由公司負擔員工勞健保自負額（本月薪資不扣勞健保）');
       const pensionMandatory = !isF || Boolean(stMeta && stMeta.pension6);
       const volPenAmt = pensionMandatory ? Math.round(nhiB * (emp.volPension||0)) : 0;
 
@@ -3540,21 +3617,23 @@ end $$;`;
       const ev = evalSchedule();
       const errCnt = ev.issues.filter(i => i.severity === 'ERROR').length;
       const warnCnt = ev.issues.filter(i => i.severity === 'WARNING').length;
-      const selDate = App.sched.selectedDate;
-      const selForecast = FORECASTS.find(f => f.date === selDate) || FORECASTS[0];
-      const dayCfg = App.sched.dayConfig[selDate] || { isClosed: false };
+      const weekDays = getVisibleWeekDays();
+      const selDate = weekDays.some(f => f.date === App.sched.selectedDate) ? App.sched.selectedDate : weekDays[0].date;
+      App.sched.selectedDate = selDate;
+      const selForecast = weekDays.find(f => f.date === selDate) || weekDays[0];
+      const dayCfg = getEffectiveDayConfig(selDate);
 
       const dayStats = {};
-      FORECASTS.forEach(f => {
-        const isClosed = (App.sched.dayConfig[f.date] || {}).isClosed;
+      weekDays.forEach(f => {
+        const isClosed = getEffectiveDayConfig(f.date).isClosed;
         const working = isClosed ? [] : App.employees.filter(e => {
           const s = App.sched.shifts.find(x => x.employeeId === e.id && x.date === f.date);
-          return s && !SHIFT_TEMPLATES[s.shiftCode].isOff;
+          return s && SHIFT_TEMPLATES[s.shiftCode] && !SHIFT_TEMPLATES[s.shiftCode].isOff;
         });
         const dayHours = working.reduce((acc, e) => acc + getShiftNetHours(App.sched.shifts.find(x => x.employeeId === e.id && x.date === f.date)), 0);
         dayStats[f.date] = { count: working.length, hours: dayHours, isClosed };
       });
-      const curDayStat = dayStats[selDate];
+      const curDayStat = dayStats[selDate] || { count: 0, hours: 0, isClosed: false };
 
       const axis = getStoreScheduleAxis();
       const AXIS_START = axis.start, AXIS_END = axis.end, AXIS_SPAN = axis.span;
@@ -3574,9 +3653,11 @@ end $$;`;
         clipZone(17.5, 20.5, '晚尖峰'),
       ].filter(Boolean);
 
-      const selIdx = FORECASTS.findIndex(f => f.date === selDate);
-      const prevDate = selIdx > 0 ? FORECASTS[selIdx - 1].date : null;
-      const prevClosed = prevDate ? Boolean((App.sched.dayConfig[prevDate] || {}).isClosed) : false;
+      const selIdx = weekDays.findIndex(f => f.date === selDate);
+      const prevDtObj = _parseYmd(selDate);
+      prevDtObj.setDate(prevDtObj.getDate() - 1);
+      const prevDate = _fmtYmd(prevDtObj);
+      const prevClosed = getEffectiveDayConfig(prevDate).isClosed;
 
       const dayRows = App.employees.map(emp => {
         const shift = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === selDate);
@@ -3686,36 +3767,42 @@ end $$;`;
             </div>
           ` : ''}
 
-          <!-- 單行緊湊型日期切換條 (取代原本佔空間的 4x2 大卡片) -->
-          <div class="bg-white border border-[var(--border)] rounded-xl p-1 grid grid-cols-4 lg:grid-cols-8 gap-1">
-            ${FORECASTS.map(d => {
-              const st = dayStats[d.date];
-              const isSel = App.sched.viewMode === 'DAY_TIMELINE' && App.sched.selectedDate === d.date;
-              return `
-                <button
-                  onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()"
-                  class="px-2.5 py-1.5 rounded-lg text-left transition cursor-pointer flex items-center justify-between gap-1 ${
-                    isSel ? 'bg-[#0F766E] text-white' : st.isClosed ? 'bg-slate-50 text-slate-400' : 'hover:bg-slate-50 text-slate-700'
-                  }"
-                >
-                  <div>
-                    <div class="text-[10px] font-medium ${isSel ? 'text-teal-100' : 'text-slate-500'}">${d.dayLabel}</div>
-                    <div class="text-xs font-bold mono-num">${d.shortDate}</div>
-                  </div>
-                  <span class="text-[10px] font-semibold mono-num px-1.5 py-0.5 rounded ${isSel ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}">
-                    ${st.isClosed ? '休' : `${st.count}人`}
-                  </span>
-                </button>
-              `;
-            }).join('')}
-            <button
-              onclick="App.sched.viewMode='WEEK_OVERVIEW';render()"
-              class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center ${
-                App.sched.viewMode === 'WEEK_OVERVIEW' ? 'bg-[#0F766E] text-white' : 'hover:bg-slate-50 text-slate-700'
-              }"
-            >
-              全週總覽
-            </button>
+          <!-- 週期切換與整月預排導覽列 -->
+          <div class="bg-white border border-[var(--border)] rounded-xl p-2 space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+              <div class="flex items-center gap-1.5">
+                <button onclick="shiftSchedWeek(-1)" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">◀ 上一週</button>
+                <span class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 font-bold mono-num">${weekDays[0].date.slice(0, 4)}/${weekDays[0].shortDate} – ${weekDays[6].shortDate}</span>
+                <button onclick="shiftSchedWeek(1)" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">下一週 ▶</button>
+                ${(Number(App.sched.weekOffset) || 0) !== 0 ? `<button onclick="App.sched.weekOffset=0;App.sched.selectedDate=getVisibleWeekDays()[0].date;render()" class="h-7 px-2.5 rounded-lg border border-teal-200 bg-teal-50 text-[#0F766E] font-semibold cursor-pointer">回到本週</button>` : ''}
+              </div>
+              <div class="flex items-center gap-1">
+                <button onclick="App.sched.viewMode='WEEK_OVERVIEW';render()" class="h-7 px-3 rounded-lg font-bold cursor-pointer transition ${App.sched.viewMode==='WEEK_OVERVIEW'?'bg-[#0F766E] text-white':'border border-slate-200 bg-white hover:bg-slate-50 text-slate-700'}">全週總覽</button>
+                <button onclick="App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-3 rounded-lg font-bold cursor-pointer transition ${App.sched.viewMode==='MONTH_GRID'?'bg-[#0F766E] text-white':'border border-slate-200 bg-white hover:bg-slate-50 text-slate-700'}">📅 整月預排總覽</button>
+              </div>
+            </div>
+            <div class="grid grid-cols-4 lg:grid-cols-7 gap-1">
+              ${weekDays.map(d => {
+                const st = dayStats[d.date];
+                const isSel = App.sched.viewMode === 'DAY_TIMELINE' && App.sched.selectedDate === d.date;
+                return `
+                  <button
+                    onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()"
+                    class="px-2.5 py-1.5 rounded-lg text-left transition cursor-pointer flex items-center justify-between gap-1 ${
+                      isSel ? 'bg-[#0F766E] text-white' : st.isClosed ? 'bg-slate-50 text-slate-400' : 'hover:bg-slate-50 text-slate-700'
+                    }"
+                  >
+                    <div>
+                      <div class="text-[10px] font-medium ${isSel ? 'text-teal-100' : 'text-slate-500'}">${d.dayLabel}</div>
+                      <div class="text-xs font-bold mono-num">${d.shortDate}</div>
+                    </div>
+                    <span class="text-[10px] font-semibold mono-num px-1.5 py-0.5 rounded ${isSel ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}">
+                      ${st.isClosed ? '休' : `${st.count}人`}
+                    </span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
           </div>
 
           ${App.sched.viewMode === 'DAY_TIMELINE' ? `
@@ -3748,14 +3835,14 @@ end $$;`;
 
               <!-- 甘特圖 (依店鋪可排班時段動態呈現 + 跨夜銜接) -->
               <div class="overflow-x-auto">
-                <div class="${AXIS_SPAN >= 18 ? 'min-w-[960px]' : 'min-w-[800px]'}">
+                <div style="min-width: ${Math.max(920, 180 + AXIS_SPAN * 68)}px;">
                   <div class="grid border-b border-[var(--border)] bg-slate-50/80 text-[11px] text-slate-500 font-semibold" style="grid-template-columns: 180px 1fr;">
                     <div class="px-4 flex items-center border-r border-[var(--border)]">員工 / 累計工時</div>
                     <div class="relative h-12">
                       ${nightZones.map(z => `<div class="absolute top-0 bottom-0 bg-indigo-500/[0.06] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-indigo-100/90 text-indigo-800 font-semibold">${z.label}</span></div>`).join('')}
                       ${peakZones.map(z => `<div class="absolute top-0 bottom-0 bg-amber-500/[0.08] flex items-start justify-center pt-1 pointer-events-none" style="left:${z.left}%;width:${z.width}%"><span class="text-[10px] leading-none px-1.5 py-0.5 rounded bg-amber-100/90 text-amber-800 font-semibold">${z.label}</span></div>`).join('')}
-                      ${AXIS_TICKS.map(t => `<span class="absolute bottom-1.5 mono-num pl-1 leading-none" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t % 24).padStart(2,'0')}:00</span>`).join('')}
-                      <span class="absolute bottom-1.5 right-1 mono-num leading-none text-slate-400">${axis.endLabel}</span>
+                      ${AXIS_TICKS.map((t, idx) => `<span class="absolute bottom-1.5 mono-num leading-none whitespace-nowrap ${idx === 0 ? 'pl-1' : '-translate-x-1/2'}" style="left:${((t - AXIS_START) / AXIS_SPAN) * 100}%">${String(t % 24).padStart(2,'0')}:00</span>`).join('')}
+                      <span class="absolute bottom-1.5 right-1 mono-num leading-none text-slate-400 whitespace-nowrap">${axis.endLabel}</span>
                     </div>
                   </div>
 
@@ -3843,11 +3930,80 @@ end $$;`;
               </div>
               <span>點擊任一班次條可調整起訖時間或工作站</span>
             </div>
-          ` : `
+          ` : App.sched.viewMode === 'MONTH_GRID' ? (() => {
+            const mInfo = getMonthCalendarDays(selDate);
+            const prevMonthAnchor = _fmtYmd(new Date(mInfo.year, mInfo.month - 2, 1));
+            const nextMonthAnchor = _fmtYmd(new Date(mInfo.year, mInfo.month, 1));
+            return `
+              <!-- 整月預排總覽 -->
+              <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
+                <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap justify-between items-center gap-2 text-xs">
+                  <div class="flex items-center gap-2">
+                    <button onclick="jumpSchedToDate('${prevMonthAnchor}');App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">◀ 上個月</button>
+                    <h2 class="text-sm font-bold text-slate-900 mono-num">${mInfo.year} 年 ${mInfo.month} 月 整月班表</h2>
+                    <button onclick="jumpSchedToDate('${nextMonthAnchor}');App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">下個月 ▶</button>
+                  </div>
+                  <span class="text-[11px] text-slate-500">點擊任一格可直接排班，點擊日期可切換單日時間軸</span>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-left text-xs" style="min-width: ${160 + mInfo.days.length * 46}px;">
+                    <thead>
+                      <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
+                        <th class="p-2.5 w-[150px] sticky left-0 bg-slate-50 z-10 border-r border-[var(--border)]">員工 / 月總時數</th>
+                        ${mInfo.days.map(d => {
+                          const isClosed = getEffectiveDayConfig(d.date).isClosed;
+                          return `
+                            <th onclick="jumpSchedToDate('${d.date}')" class="p-1.5 text-center border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-teal-50 ${isClosed ? 'bg-slate-100/80 text-slate-400' : (d.isPeak ? 'bg-amber-50/50 text-amber-800' : '')}">
+                              <div class="text-[10px]">${d.dayLabel.replace('週','')}</div>
+                              <div class="mono-num font-bold">${d.dayNum}</div>
+                            </th>
+                          `;
+                        }).join('')}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${App.employees.length === 0 ? `
+                        <tr><td colspan="${mInfo.days.length + 1}" class="p-8 text-center text-slate-400">尚未建立員工資料，請先至「人事建檔」新增員工。</td></tr>
+                      ` : App.employees.map(emp => {
+                        const monthHours = mInfo.days.reduce((acc, d) => {
+                          if (getEffectiveDayConfig(d.date).isClosed) return acc;
+                          const s = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === d.date);
+                          return acc + getShiftNetHours(s);
+                        }, 0);
+                        return `
+                          <tr class="border-b border-slate-100 last:border-b-0">
+                            <td class="p-2.5 sticky left-0 bg-white z-10 border-r border-[var(--border)]">
+                              <div class="font-bold text-slate-900 truncate">${emp.name}</div>
+                              <div class="text-[10px] text-slate-500 mono-num">${emp.type} · ${monthHours.toFixed(1)}h</div>
+                            </td>
+                            ${mInfo.days.map(d => {
+                              const isClosed = getEffectiveDayConfig(d.date).isClosed;
+                              const s = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === d.date);
+                              const segs = isClosed ? [] : getShiftSegments(s);
+                              const tpl = s ? SHIFT_TEMPLATES[s.shiftCode] : null;
+                              const wObj = (s && (App.storeSettings.workstations.find(w => w.code === s.station) || STATIONS[s.station])) || null;
+                              return `
+                                <td onclick="App.sched.editingShiftModal={empId:'${emp.id}',date:'${d.date}',isNew:${segs.length===0}};render()" class="p-1 border-r border-slate-100 last:border-r-0 text-center cursor-pointer hover:bg-teal-50/60 ${isClosed ? 'bg-slate-50/80' : ''}" title="${emp.name} ${d.shortDate} ${segs.length ? segs.map(g=>g.label).join(' / ') : (isClosed ? '店休' : '點擊排班')}">
+                                  ${segs.length > 0
+                                    ? `<div class="rounded py-0.5 px-0.5 text-[10px] font-bold truncate" style="background:${wObj ? wObj.badgeBg : '#CCFBF1'};color:${wObj ? wObj.badgeText : '#0F766E'};">${tpl ? tpl.shortLabel.slice(0, 3) : '班'}</div>`
+                                    : `<span class="text-[10px] text-slate-300">${isClosed ? '休' : '·'}</span>`
+                                  }
+                                </td>
+                              `;
+                            }).join('')}
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            `;
+          })() : `
             <!-- 全週總覽 -->
             <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
               <div class="px-4 py-3 border-b border-[var(--border)] flex justify-between items-center">
-                <h2 class="text-sm font-bold text-slate-900">全週排班總覽（11/23 ~ 11/29）</h2>
+                <h2 class="text-sm font-bold text-slate-900">全週排班總覽（${weekDays[0].shortDate} ~ ${weekDays[6].shortDate}）</h2>
                 <span class="text-xs font-bold mono-num text-[#0F766E]">全週合計 ${ev.totalHours.toFixed(1)}h</span>
               </div>
               <div class="overflow-x-auto">
@@ -3855,25 +4011,25 @@ end $$;`;
                   <thead>
                     <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
                       <th class="p-3 w-[160px] border-r border-[var(--border)]">員工 / 週總時數</th>
-                      ${FORECASTS.map(d => `<th class="p-2.5 text-center border-r border-[var(--border)] last:border-r-0 cursor-pointer hover:text-[#0F766E]" onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()">${d.dayLabel} ${d.shortDate}</th>`).join('')}
+                      ${weekDays.map(d => `<th class="p-2.5 text-center border-r border-[var(--border)] last:border-r-0 cursor-pointer hover:text-[#0F766E]" onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()">${d.dayLabel} ${d.shortDate}</th>`).join('')}
                     </tr>
                   </thead>
                   <tbody>
                     ${App.employees.map(emp => {
-                      const sum = ev.summaries[emp.id];
+                      const sum = ev.summaries[emp.id] || { hours: 0 };
                       return `
                         <tr class="border-b border-slate-100 last:border-b-0">
                           <td class="p-3 border-r border-[var(--border)]">
                             <div class="font-bold text-slate-900">${emp.name}</div>
                             <div class="text-[11px] text-slate-500 mono-num">${emp.type} · ${sum.hours.toFixed(1)}h</div>
                           </td>
-                          ${FORECASTS.map(d => {
-                            const isClosed = (App.sched.dayConfig[d.date] || {}).isClosed;
+                          ${weekDays.map(d => {
+                            const isClosed = getEffectiveDayConfig(d.date).isClosed;
                             const s = App.sched.shifts.find(x => x.employeeId === emp.id && x.date === d.date);
                             const segs = isClosed ? [] : getShiftSegments(s);
                             const wObj = (s && (App.storeSettings.workstations.find(w => w.code === s.station) || STATIONS[s.station])) || null;
                             return `
-                              <td class="p-1.5 border-r border-slate-100 last:border-r-0 text-center cursor-pointer hover:bg-slate-50" onclick="App.sched.editingShiftModal={empId:'${emp.id}',date:'${d.date}'};render()">
+                              <td class="p-1.5 border-r border-slate-100 last:border-r-0 text-center cursor-pointer hover:bg-slate-50" onclick="App.sched.editingShiftModal={empId:'${emp.id}',date:'${d.date}',isNew:${segs.length===0}};render()">
                                 ${segs.length > 0 ? `<div class="rounded py-1 px-1 mono-num text-[11px] font-semibold" style="background:${wObj ? wObj.badgeBg : '#F1F5F9'};color:${wObj ? wObj.badgeText : '#334155'};border-left:2px solid ${wObj ? wObj.badgeText : '#64748B'};"><div>${segs.map(g => g.label).join('<br/>')}</div><div class="text-[10px] opacity-80">${wObj ? wObj.shortName : ''}</div></div>` : `<span class="text-[11px] text-slate-300">${isClosed ? '店休' : '休'}</span>`}
                               </td>
                             `;
@@ -4141,6 +4297,12 @@ end $$;`;
                     </div>
                     <div><label class="block font-semibold text-slate-600 mb-1">勞退自提比例</label><select onchange="App.hr.form.volPension=Number(this.value);render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 mono-num font-semibold"><option value="0" ${(f.volPension||0)===0?'selected':''}>0% (不自提)</option><option value="0.03" ${f.volPension===0.03?'selected':''}>3%</option><option value="0.06" ${f.volPension===0.06?'selected':''}>6% (上限)</option></select></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">眷屬健保人數</label><input type="number" min="0" max="5" value="${f.deps||0}" onfocus="this.select()" oninput="App.hr.form.deps=Math.max(0,Number(this.value)||0);updateHrLiveSummary()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    <div class="col-span-2 sm:col-span-3">
+                      <label class="flex items-center gap-2 p-2.5 rounded-lg border ${f.companyPaysEmployeeIns ? 'border-[#0F766E] bg-teal-50/70' : 'border-slate-200 bg-slate-50/70'} cursor-pointer">
+                        <input type="checkbox" ${f.companyPaysEmployeeIns ? 'checked' : ''} onchange="App.hr.form.companyPaysEmployeeIns=this.checked;updateHrLiveSummary();render()" class="rounded border-slate-300" />
+                        <span class="font-semibold text-slate-800">公司負擔員工勞健保自負額（薪資結算時不扣除員工勞保與健保費）</span>
+                      </label>
+                    </div>
                     <div><label class="block font-semibold text-slate-600 mb-1">薪轉銀行</label><select onchange="const b=TAIWAN_BANKS.find(x=>x.code===this.value);App.hr.form.bankCode=b.code;App.hr.form.bankName=b.name;render()" class="w-full h-9 px-2 rounded-lg border border-slate-200 font-semibold">${TAIWAN_BANKS.map(b=>`<option value="${b.code}" ${f.bankCode===b.code?'selected':''}>${b.code} ${b.name}</option>`).join('')}</select></div>
                     <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">薪轉帳號</label><input value="${f.accountNumber||''}" oninput="App.hr.form.accountNumber=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold ${App.hr.ocrHits.accountNumber?'ocr-filled':''}" /></div>
                   </div>
@@ -5046,14 +5208,18 @@ end $$;`;
                 </div>
 
                 <div class="p-3.5 border-b border-[var(--border)] bg-slate-50/60">
-                  <form onsubmit="addStoreAdmin(event)" class="grid grid-cols-2 gap-2">
-                    <input value="${d.name}" oninput="App.storeSettings.adminDraft.name=this.value" list="all-emp-names" placeholder="管理員姓名（可選現有員工）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold" />
-                    <datalist id="all-emp-names">${App.employees.map(e => `<option value="${e.name}"></option>`).join('')}</datalist>
-                    <input value="${d.title}" oninput="App.storeSettings.adminDraft.title=this.value" placeholder="職稱（如：儲備店長）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
-                    <select onchange="App.storeSettings.adminDraft.role=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${d.role===r.code?'selected':''}>${r.name}</option>`).join('')}</select>
+                  <form onsubmit="addStoreAdmin(event)" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    ${App.employees.length > 0 ? `
+                      <select onchange="const emp=App.employees.find(x=>x.id===this.value);if(emp){App.storeSettings.adminDraft.name=emp.name;App.storeSettings.adminDraft.contact=emp.phone||'';if(!App.storeSettings.adminDraft.title)App.storeSettings.adminDraft.title=emp.roleTitle||'';render();}" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">
+                        <option value="">— 從現有員工選擇 (${App.employees.length} 人) —</option>
+                        ${App.employees.map(e => `<option value="${e.id}" ${d.name===e.name?'selected':''}>${e.name}（${e.code} · ${e.roleTitle || e.type}）</option>`).join('')}
+                      </select>
+                    ` : ''}
+                    <input value="${d.name}" oninput="App.storeSettings.adminDraft.name=this.value" placeholder="管理員姓名（或從左側選現有員工）" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold" />
+                    <select onchange="App.storeSettings.adminDraft.role=this.value" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold">${STORE_ROLE_DEFS.map(r => `<option value="${r.code}" ${d.role===r.code?'selected':''}>指派角色：${r.name}</option>`).join('')}</select>
                     <div class="flex gap-1.5">
                       <input value="${d.contact}" oninput="App.storeSettings.adminDraft.contact=this.value" placeholder="Email 或手機號碼" class="flex-1 min-w-0 h-8 px-2.5 rounded-lg border border-slate-200 bg-white" />
-                      <button type="submit" class="shrink-0 h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">+ 新增</button>
+                      <button type="submit" class="shrink-0 h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">+ 指派</button>
                     </div>
                   </form>
                 </div>
