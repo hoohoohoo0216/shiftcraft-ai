@@ -1527,7 +1527,7 @@ end $$;`;
     }
 
     const SENSITIVE_EMP_FIELDS = [
-      'nationalId', 'accountNumber', 'phone', 'registeredAddress', 'mailingAddress',
+      'nationalId', 'birthDate', 'accountNumber', 'phone', 'registeredAddress', 'mailingAddress',
       'passportNumber', 'emergencyPhone', 'idFrontImg', 'idBackImg', 'workPermitImg', 'bankBookImg',
     ];
     const _brandCryptoKeyCache = {};
@@ -2254,14 +2254,92 @@ end $$;`;
       return c.toDataURL('image/png');
     }
 
+    let _tesseractLoadPromise = null;
+    function ensureTesseractLoaded() {
+      if (window.Tesseract) return Promise.resolve(window.Tesseract);
+      if (_tesseractLoadPromise) return _tesseractLoadPromise;
+      _tesseractLoadPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        s.onload = () => resolve(window.Tesseract);
+        s.onerror = () => reject(new Error('OCR 引擎載入失敗'));
+        document.head.appendChild(s);
+      });
+      return _tesseractLoadPromise;
+    }
+
+    function parseTaiwanBirthDate(text) {
+      const clean = String(text || '').replace(/\s+/g, '');
+      // 1. 民國年格式：民國85年5月12日 或 85年05月12日
+      const rocM = clean.match(/(?:民國)?(\d{2,3})年(\d{1,2})月(\d{1,2})日?/);
+      if (rocM) {
+        const y = parseInt(rocM[1], 10);
+        const adYear = y < 1911 ? y + 1911 : y;
+        const m = parseInt(rocM[2], 10);
+        const d = parseInt(rocM[3], 10);
+        if (adYear >= 1930 && adYear <= 2015 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return `${adYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+      }
+      // 2. 西元年格式（ARC / 護照）：1996/05/12 或 1996-05-12
+      const adM = clean.match(/(19\d{2}|20[01]\d)[./-](\d{1,2})[./-](\d{1,2})/);
+      if (adM) {
+        const y = parseInt(adM[1], 10), m = parseInt(adM[2], 10), d = parseInt(adM[3], 10);
+        if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+          return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+      }
+      return '';
+    }
+
     function saveHrDocPhoto(docType, rawUrl) {
-      applyWatermark(rawUrl, App.hr.watermark, (url) => {
+      applyWatermark(rawUrl, App.hr.watermark, async (url) => {
         if (docType === 'ARC_FRONT' || docType === 'ID_FRONT') App.hr.form.idFrontImg = url;
         if (docType === 'ARC_BACK' || docType === 'ID_BACK') App.hr.form.idBackImg = url;
         if (docType === 'WORK_PERMIT') App.hr.form.workPermitImg = url;
         if (docType === 'BANK_PASSBOOK') App.hr.form.bankBookImg = url;
-        App.toast = '證件照片已加上浮水印並加密暫存，儲存員工檔案後將同步至雲端。';
+        App.hr.scanningDoc = docType;
+        App.toast = '證件已加密暫存，正在本機辨識證件文字（初次載入約 3–5 秒）…';
         render();
+
+        try {
+          const T = await ensureTesseractLoaded();
+          const lang = docType === 'BANK_PASSBOOK' ? 'chi_tra+eng' : 'chi_tra+eng';
+          const res = await T.recognize(rawUrl, lang);
+          const text = (res && res.data && res.data.text) ? res.data.text : '';
+          const f = App.hr.form;
+          const found = [];
+
+          if (docType === 'ID_FRONT' || docType === 'ARC_FRONT') {
+            // 身分證 / 統一證號
+            const idM = text.toUpperCase().replace(/\s+/g, '').match(/[A-Z][1289A-D]\d{8}/);
+            if (idM && !f.nationalId) { f.nationalId = idM[0]; found.push('證號 ' + idM[0]); }
+            // 生日（自動將民國年轉西元年）
+            const bd = parseTaiwanBirthDate(text);
+            if (bd && !f.birthDate) { f.birthDate = bd; found.push('生日 ' + bd); }
+            // 姓名
+            const nameM = text.replace(/\s+/g, '').match(/姓名[:：]?([\u4e00-\u9fa5]{2,4})/);
+            if (nameM && !f.name) { f.name = nameM[1]; found.push('姓名 ' + nameM[1]); }
+          } else if (docType === 'ID_BACK' || docType === 'ARC_BACK') {
+            const addrM = text.replace(/\s+/g, '').match(/(?:住址|地址)[:：]?([\u4e00-\u9fa5\d\-巷弄號樓之鄰里區市縣鄉鎮村段街路]{6,40})/);
+            if (addrM && !f.registeredAddress) { f.registeredAddress = addrM[1]; found.push('戶籍地址'); }
+          } else if (docType === 'BANK_PASSBOOK') {
+            const matchedBank = TAIWAN_BANKS.find(b => text.includes(b.code) || text.includes(b.name.slice(0, 4)));
+            if (matchedBank) { f.bankCode = matchedBank.code; f.bankName = matchedBank.name; found.push(matchedBank.name); }
+            const accM = text.replace(/[-\s]/g, '').match(/\d{10,14}/);
+            if (accM && !f.accountNumber) { f.accountNumber = accM[0]; found.push('存摺帳號'); }
+          }
+
+          App.hr.scanningDoc = null;
+          App.toast = found.length > 0
+            ? `✅ 證件辨識完成，已自動填入：${found.join('、')}（請核對確認）。`
+            : '照片已加密儲存（此張反光或字體較淡未辨識出文字，請直接手動填寫）。';
+          render();
+        } catch (err) {
+          App.hr.scanningDoc = null;
+          App.toast = '照片已加上浮水印並加密暫存，請直接手動填寫欄位資料。';
+          render();
+        }
       });
     }
 
@@ -3822,6 +3900,7 @@ end $$;`;
                     <div class="flex justify-between text-xs font-bold text-slate-800"><span>${s.title}</span>${s.img?'<span class="text-emerald-600 text-[11px]">已加浮水印</span>':''}</div>
                     <div class="relative h-[120px] rounded-lg border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center overflow-hidden">
                       ${s.img ? `<img src="${s.img}" onclick="App.hr.previewImgModal={title:'${s.title}',src:'${s.img}'};render()" class="w-full h-full object-cover cursor-zoom-in" />` : '<span class="text-xs text-slate-400">尚未上傳證件</span>'}
+                      ${App.hr.scanningDoc === s.key ? '<div class="absolute inset-0 bg-slate-900/45 flex items-center justify-center"><span class="px-2.5 py-1 rounded bg-slate-900 text-emerald-300 text-xs font-semibold">本機辨識中…</span></div>' : ''}
                     </div>
                     <div class="grid grid-cols-2 gap-2 text-xs font-semibold">
                       <label class="h-8 rounded-lg bg-[#0F766E] text-white flex items-center justify-center cursor-pointer">上傳照片<input type="file" accept="image/*" class="hidden" onchange="const file=this.files[0];if(file){const r=new FileReader();r.onload=()=>saveHrDocPhoto('${s.key}',r.result);r.readAsDataURL(file);}" /></label>
@@ -3838,8 +3917,9 @@ end $$;`;
                   <div class="grid grid-cols-2 gap-3">
                     <div><label class="block font-semibold text-slate-600 mb-1">員工編號</label><input value="${f.code}" oninput="App.hr.form.code=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">中文姓名 *</label><input value="${f.name}" oninput="App.hr.form.name=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold" /></div>
+                    <div><label class="block font-semibold text-slate-600 mb-1">出生年月日（生日）</label><input type="date" value="${f.birthDate||''}" onchange="App.hr.form.birthDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
                     <div><label class="block font-semibold text-slate-600 mb-1">到職日 *</label><input type="date" value="${f.hireDate||''}" onchange="App.hr.form.hireDate=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
+                    <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
                     ${isF ? `
                       <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">外籍聘僱類別</label><select onchange="App.hr.form.foreignStatusType=this.value;render()" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 font-semibold">${FOREIGN_STATUSES.map(o=>`<option value="${o.code}" ${f.foreignStatusType===o.code?'selected':''}>${o.label}</option>`).join('')}</select></div>
                       <div><label class="block font-semibold text-slate-600 mb-1">居留證效期 (ARC)</label><input type="date" value="${f.arcExpiryDate||''}" oninput="App.hr.form.arcExpiryDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
