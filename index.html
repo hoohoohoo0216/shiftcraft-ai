@@ -217,14 +217,16 @@
           }
         });
       };
-      if (typeof App !== 'undefined' && App) {
-        inspectList(App.employees);
-        if (App.multiStore && App.multiStore.storeData) {
-          Object.values(App.multiStore.storeData).forEach(snap => {
-            if (snap && snap.employees) inspectList(snap.employees);
-          });
+      try {
+        if (App) {
+          inspectList(App.employees);
+          if (App.multiStore && App.multiStore.storeData) {
+            Object.values(App.multiStore.storeData).forEach(snap => {
+              if (snap && snap.employees) inspectList(snap.employees);
+            });
+          }
         }
-      }
+      } catch (e) {}
       return `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
     }
 
