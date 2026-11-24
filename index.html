@@ -580,6 +580,7 @@
         balances: {},
         leaveDraft: { leaveType: 'ANNUAL', date: '2026-11-28', hours: 8, deputyId: 'emp-05', reason: '', proofName: '' },
         swapDraft: { date: '2026-11-27', targetEmpId: 'emp-05', reason: '' },
+        overtimeDraft: { date: '2026-11-28', hours: 1.5, compensation: 'PAY', reason: '' },
         requests: [
           {
             id: 'ap-101', kind: 'LEAVE', employeeId: 'emp-02', leaveType: 'ANNUAL', date: '2026-11-27', hours: 7.5, deputyId: 'emp-06',
@@ -645,6 +646,10 @@
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
         scheduleStartHour: 8, scheduleEndHour: 23,
         monthlyFixedOverhead: 0,
+        ptPunchPayMode: 'ACTUAL', // 'ACTUAL' (實打實計) | 'SCHEDULE_ALIGNED' (排班對齊＋超時簽核)
+        ptOvertimeGraceMins: 10,
+        ftEarlyOutNoPenalty: true,
+        ftOvertimeAlertMins: 15,
         peakHours: [], peakDraft: { label: '', start: '11:30', end: '14:00' },
         laborInsuranceUnit: '01094827K', nhiInsuranceUnit: '010194827',
         weeklyClosedDays: [],
@@ -2877,14 +2882,148 @@ end $$;`;
       render();
     }
 
+    function parseClockToMins(str) {
+      if (!str) return null;
+      const parts = String(str).trim().split(':').map(Number);
+      if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return null;
+      return parts[0] * 60 + parts[1];
+    }
+
     function calcWorkedHoursFromPunch(inStr, outStr) {
-      if (!inStr || !outStr) return 0;
-      const [ih, im] = String(inStr).split(':').map(Number);
-      const [oh, om] = String(outStr).split(':').map(Number);
-      if ([ih, im, oh, om].some(isNaN)) return 0;
-      let mins = (oh * 60 + om) - (ih * 60 + im);
+      const im = parseClockToMins(inStr);
+      const om = parseClockToMins(outStr);
+      if (im === null || om === null) return 0;
+      let mins = om - im;
       if (mins <= 0) mins += 1440;
-      return Math.round((mins / 60) * 10) / 10;
+      return Math.round((mins / 60) * 100) / 100;
+    }
+
+    function parseScheduledRangeForLog(log) {
+      let raw = (log && log.scheduled) ? String(log.scheduled) : '';
+      let m = raw.match(/(\d{1,2}:\d{2})\s*[–\-~]\s*(\d{1,2}:\d{2})/);
+      if (!m && log && log.employeeId && log.date) {
+        const sh = (App.sched.shifts || []).find(s => s.employeeId === log.employeeId && s.date === log.date);
+        const segs = sh ? getShiftSegments(sh) : [];
+        if (segs.length) {
+          const first = segs[0].label.match(/(\d{1,2}:\d{2})\s*[–\-~]\s*(\d{1,2}:\d{2})/);
+          const last = segs[segs.length - 1].label.match(/(\d{1,2}:\d{2})\s*[–\-~]\s*(\d{1,2}:\d{2})/);
+          if (first && last) m = [raw, first[1], last[2]];
+        }
+      }
+      if (!m) return null;
+      const startMin = parseClockToMins(m[1]);
+      let endMin = parseClockToMins(m[2]);
+      if (startMin === null || endMin === null) return null;
+      if (endMin <= startMin) endMin += 1440;
+      return { startMin, endMin, startStr: m[1], endStr: m[2] };
+    }
+
+    function getAttendanceLogEvaluation(log, emp) {
+      const st = App.storeSettings || {};
+      const ptMode = st.ptPunchPayMode || 'ACTUAL';
+      const ptGrace = Number.isFinite(Number(st.ptOvertimeGraceMins)) ? Number(st.ptOvertimeGraceMins) : 10;
+      const ftNoEarlyPenalty = st.ftEarlyOutNoPenalty !== false;
+      const ftAlertMins = Number.isFinite(Number(st.ftOvertimeAlertMins)) ? Number(st.ftOvertimeAlertMins) : 15;
+      const range = parseScheduledRangeForLog(log);
+      const inMin = parseClockToMins(log && log.clockIn);
+      let outMin = parseClockToMins(log && log.clockOut);
+      if (inMin !== null && outMin !== null && outMin <= inMin) outMin += 1440;
+      const actualMins = (inMin !== null && outMin !== null) ? Math.max(0, outMin - inMin) : 0;
+      const actualHours = Math.round((actualMins / 60) * 100) / 100;
+
+      let earlyInMins = 0, overtimeMins = 0, earlyOutMins = 0;
+      if (range && inMin !== null) earlyInMins = Math.max(0, range.startMin - inMin);
+      if (range && outMin !== null) {
+        overtimeMins = Math.max(0, outMin - range.endMin);
+        earlyOutMins = Math.max(0, range.endMin - outMin);
+      }
+
+      let payableMins = actualMins;
+      if (inMin !== null && outMin !== null && emp && emp.type === 'PT' && ptMode === 'SCHEDULE_ALIGNED' && range) {
+        const effStart = (inMin < range.startMin && !log.ptEarlyInApproved) ? range.startMin : inMin;
+        let effEnd = outMin;
+        if (outMin > range.endMin) {
+          if (overtimeMins > ptGrace && log.ptOvertimeStatus === 'APPROVED') {
+            effEnd = outMin;
+          } else {
+            effEnd = range.endMin;
+          }
+        }
+        payableMins = Math.max(0, effEnd - effStart);
+      }
+      const payableHours = Math.round((payableMins / 60) * 100) / 100;
+      const needsPtOtReview = Boolean(emp && emp.type === 'PT' && ptMode === 'SCHEDULE_ALIGNED' && overtimeMins > ptGrace && !log.ptOvertimeStatus);
+      const existingOtReq = (App.liff.requests || []).find(r => r.kind === 'OVERTIME' && r.employeeId === log.employeeId && r.date === log.date && r.status !== 'REJECTED');
+      const needsFtOtHint = Boolean(emp && emp.type === 'FT' && overtimeMins >= ftAlertMins && !existingOtReq);
+      const isFtApprovedEarlyOut = Boolean(emp && emp.type === 'FT' && earlyOutMins > 0 && ftNoEarlyPenalty);
+
+      return {
+        ptMode, ptGrace, ftNoEarlyPenalty, ftAlertMins, range,
+        actualMins, actualHours, payableMins, payableHours,
+        earlyInMins, overtimeMins, earlyOutMins,
+        needsPtOtReview, needsFtOtHint, existingOtReq, isFtApprovedEarlyOut,
+      };
+    }
+
+    function setPtLogOvertimeDecision(logId, decision) {
+      const log = (App.attendance.logs || []).find(l => l.id === logId);
+      if (!log) return;
+      log.ptOvertimeStatus = decision;
+      const emp = App.employees.find(e => e.id === log.employeeId);
+      App.toast = decision === 'APPROVED'
+        ? `已核准 ${emp ? emp.name : ''} (${log.date}) 超時打卡，將依實際下班時間計薪。`
+        : `已設定 ${emp ? emp.name : ''} (${log.date}) 依原排班下班時間計薪。`;
+      render();
+    }
+
+    function syncApprovedOvertimeToPayroll(monthKey) {
+      const mk = monthKey || App.payroll.monthKey;
+      const approvedPayReqs = (App.liff.requests || []).filter(r =>
+        r.kind === 'OVERTIME' && r.status === 'APPROVED' && r.compensation === 'PAY' && r.date && r.date.startsWith(mk)
+      );
+      const byEmp = {};
+      approvedPayReqs.forEach(r => {
+        const h = Math.max(0, Number(r.hours) || 0);
+        if (!byEmp[r.employeeId]) byEmp[r.employeeId] = { ot134: 0, ot167: 0 };
+        byEmp[r.employeeId].ot134 += Math.min(2, h);
+        byEmp[r.employeeId].ot167 += Math.max(0, h - 2);
+      });
+      Object.keys(byEmp).forEach(empId => {
+        const emp = App.employees.find(e => e.id === empId);
+        if (!emp) return;
+        const rec = ensurePayrollAtt(mk, emp);
+        rec.ot134 = Math.round(byEmp[empId].ot134 * 10) / 10;
+        rec.ot167 = Math.round(byEmp[empId].ot167 * 10) / 10;
+      });
+    }
+
+    function quickCreateFtOvertimeFromLog(logId, compensation) {
+      const log = (App.attendance.logs || []).find(l => l.id === logId);
+      if (!log) return;
+      const emp = App.employees.find(e => e.id === log.employeeId);
+      if (!emp) return;
+      const ev = getAttendanceLogEvaluation(log, emp);
+      const hrs = Math.max(0.5, Math.round((ev.overtimeMins / 60) * 2) / 2);
+      const comp = compensation === 'COMP_OFF' ? 'COMP_OFF' : 'PAY';
+      const id = 'ot-' + Date.now();
+      App.liff.requests.unshift({
+        id,
+        kind: 'OVERTIME',
+        employeeId: emp.id,
+        date: log.date,
+        hours: hrs,
+        compensation: comp,
+        summary: `加班 ${hrs} 小時｜${comp === 'COMP_OFF' ? '轉加班補休 (1:1)' : '領加班費 (1.34/1.67倍)'}`,
+        reason: `出勤下班打卡超時 ${ev.overtimeMins} 分鐘（店長自出勤紀錄轉立加班核准）`,
+        proofName: '',
+        status: 'PENDING',
+        managerNote: '',
+        createdAt: '剛剛由出勤紀錄建立',
+        aiCheck: comp === 'COMP_OFF'
+          ? `依勞基法第 32-1 條：核准後自動加入「加班補休」餘額 +${hrs}h。`
+          : `依勞基法第 24 條：前 2 小時 1.34 倍、第 3 小時起 1.67 倍，核准後自動寫入當月薪資結算。`,
+      });
+      managerSignOff(id, 'APPROVED', false, comp);
     }
 
     function evalMonthlyHolidayCompliance(monthKey) {
@@ -2901,7 +3040,7 @@ end $$;`;
           const sh = (App.sched.shifts || []).find(s => s.employeeId === emp.id && s.date === h.date);
           const punchLog = (App.attendance.logs || []).find(l => l.employeeId === emp.id && l.date === h.date && l.clockIn && l.clockOut);
           const hasPunch = Boolean(punchLog);
-          const workedHours = hasPunch ? calcWorkedHoursFromPunch(punchLog.clockIn, punchLog.clockOut) : (isStoreClosed ? 0 : getShiftNetHours(sh));
+          const workedHours = hasPunch ? getAttendanceLogEvaluation(punchLog, emp).payableHours : (isStoreClosed ? 0 : getShiftNetHours(sh));
           const sourceTag = hasPunch ? '實打' : '排班預估';
           if (h.kind === '選舉日' && emp.nationalityType === 'FOREIGN') {
             return {
@@ -2973,7 +3112,8 @@ end $$;`;
         let holHours = 0;
         const holDates = [];
         logs.forEach(l => {
-          const h = calcWorkedHoursFromPunch(l.clockIn, l.clockOut);
+          const ev = getAttendanceLogEvaluation(l, emp);
+          const h = ev.payableHours;
           totalPunches++;
           const holMeta = statutoryMap.get(l.date);
           const isEligibleHoliday = Boolean(holMeta && !(holMeta.kind === '選舉日' && emp.nationalityType === 'FOREIGN'));
@@ -2985,8 +3125,8 @@ end $$;`;
           }
         });
         if (emp.type === 'PT') {
-          rec.regH = Math.round(regHours * 10) / 10;
-          rec.holidayHoursPT = Math.round(holHours * 10) / 10;
+          rec.regH = Math.round(regHours * 100) / 100;
+          rec.holidayHoursPT = Math.round(holHours * 100) / 100;
           rec.holidaysWorked = holDates;
         } else {
           rec.holidaysWorked = holDates;
@@ -2994,10 +3134,12 @@ end $$;`;
         rec.manualLateOverride = false;
         syncedEmps++;
       });
+      syncApprovedOvertimeToPayroll(mk);
+      const ptModeLabel = (App.storeSettings && App.storeSettings.ptPunchPayMode === 'SCHEDULE_ALIGNED') ? '排班對齊＋超時簽核' : '實打實計';
       if (syncedEmps === 0) {
-        App.toast = `${monthMeta.label}尚無完整的上下班打卡紀錄，目前維持排班預估或手動輸入數值。`;
+        App.toast = `${monthMeta.label}尚無完整的上下班打卡紀錄，目前維持排班預估或手動輸入數值（已同步核准加班）。`;
       } else {
-        App.toast = `✅ 已依 ${monthMeta.label} 實際打卡紀錄（共 ${totalPunches} 筆）自動核算 ${syncedEmps} 位員工之出勤工時與國定假日雙倍薪！`;
+        App.toast = `✅ 已依 ${monthMeta.label} 打卡紀錄（共 ${totalPunches} 筆，PT 模式：${ptModeLabel}）自動核算 ${syncedEmps} 位員工工時、假日雙倍薪與核准加班！`;
       }
       render();
     }
@@ -3221,6 +3363,37 @@ end $$;`;
       render();
     }
 
+    function submitLiffOvertimeRequest(e) {
+      e.preventDefault();
+      if (!App.liff.overtimeDraft) App.liff.overtimeDraft = { date: '2026-11-28', hours: 1.5, compensation: 'PAY', reason: '' };
+      const d = App.liff.overtimeDraft;
+      const emp = App.employees.find(x => x.id === App.liff.empId) || getActiveEmployees()[0];
+      if (!emp) return;
+      const hrs = Math.max(0.5, Math.min(12, Math.round((Number(d.hours) || 1) * 2) / 2));
+      const comp = d.compensation === 'COMP_OFF' ? 'COMP_OFF' : 'PAY';
+      App.liff.requests.unshift({
+        id: 'ot-' + Date.now(),
+        kind: 'OVERTIME',
+        employeeId: emp.id,
+        date: d.date || App.sched.selectedDate || '2026-11-28',
+        hours: hrs,
+        compensation: comp,
+        summary: `加班 ${hrs} 小時｜${comp === 'COMP_OFF' ? '轉加班補休 (1:1)' : '領加班費 (1.34/1.67倍)'}`,
+        reason: (d.reason || '').trim() || '現場尖峰忙碌延後收班',
+        proofName: '',
+        status: 'PENDING',
+        managerNote: '',
+        createdAt: '剛剛 via LINE LIFF',
+        aiCheck: comp === 'COMP_OFF'
+          ? `依勞基法第 32-1 條：核准後將自動加入「加班補休」餘額 +${hrs}h。`
+          : `依勞基法第 24 條：前 2 小時 1.34 倍、第 3 小時起 1.67 倍，核准後將自動同步寫入當月薪資結算。`,
+      });
+      App.liff.overtimeDraft.reason = '';
+      App.liff.phoneTab = 'BALANCES';
+      App.toast = `${emp.name} 已送出「加班 ${hrs}h（${comp === 'COMP_OFF' ? '轉補休' : '領加班費'}）」申請，等待店長簽核。`;
+      render();
+    }
+
     function getActiveLineApprover(targetDate) {
       const dateStr = targetDate || App.sched.selectedDate || '2026-11-28';
       const admins = (App.storeSettings && App.storeSettings.admins) || [];
@@ -3232,7 +3405,7 @@ end $$;`;
       return { isDelegated: false, name: mgr.name, roleLabel, shiftLabel: '', managerName: mgr.name, dateStr };
     }
 
-    function managerSignOff(reqId, decision, viaLine) {
+    function managerSignOff(reqId, decision, viaLine, overrideComp) {
       const req = App.liff.requests.find(r => r.id === reqId);
       if (!req || req.status !== 'PENDING') return;
       const ap = getActiveLineApprover(App.sched.selectedDate);
@@ -3241,8 +3414,8 @@ end $$;`;
       if (viaLine) req.signedVia = 'LINE';
       req.signedBy = `${ap.name} (${ap.roleLabel})`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
-        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班與假別餘額') : '已核准，系統已同步排班與假別餘額')
-        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '當日人力不足，請另行協調'));
+        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班、假別與薪資') : '已核准，系統已同步排班、假別與薪資')
+        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '未核准，請另行協調'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         if (req.kind === 'LEAVE') {
@@ -3255,7 +3428,7 @@ end $$;`;
           else if (req.leaveType === 'MENSTRUAL') bal.menstrualUsedMonth += 1;
           const s = App.sched.shifts.find(x => x.employeeId === req.employeeId && x.date === req.date);
           if (s) { s.shiftCode = 'OFF_REST'; delete s.customStart; delete s.customEnd; }
-          App.toast = `已核准 ${emp.name} 請假，假別餘額與排班時間軸已同步更新。`;
+          App.toast = `已核准 ${emp ? emp.name : ''} 請假，假別餘額與排班時間軸已同步更新。`;
         } else if (req.kind === 'SWAP') {
           const s1 = App.sched.shifts.find(x => x.employeeId === req.employeeId && x.date === req.date);
           const s2 = App.sched.shifts.find(x => x.employeeId === req.deputyId && x.date === req.date);
@@ -3266,8 +3439,25 @@ end $$;`;
             [s1.customEnd, s2.customEnd] = [s2.customEnd, s1.customEnd];
           }
           App.toast = `已核准調班，${req.date.slice(5)} 排班時間條已即時互換。`;
+        } else if (req.kind === 'OVERTIME') {
+          const comp = overrideComp || req.compensation || 'PAY';
+          req.compensation = comp;
+          const h = Math.max(0, Number(req.hours) || 0);
+          req.summary = `加班 ${h} 小時｜${comp === 'COMP_OFF' ? '轉加班補休 (1:1)' : '領加班費 (1.34/1.67倍)'}`;
+          if (comp === 'COMP_OFF') {
+            const bal = ensureLeaveBalance(req.employeeId);
+            if (!req.compOffCredited) {
+              bal.compOffRemain = Math.round(((Number(bal.compOffRemain) || 0) + h) * 10) / 10;
+              req.compOffCredited = true;
+            }
+            App.toast = `已核准 ${emp ? emp.name : ''} 加班 ${h}h，已自動加入「加班補休」餘額（目前 ${bal.compOffRemain}h）。`;
+          } else {
+            const mk = (req.date || App.payroll.monthKey || '2026-11').slice(0, 7);
+            syncApprovedOvertimeToPayroll(mk);
+            App.toast = `已核准 ${emp ? emp.name : ''} 加班 ${h}h（領加班費），已同步寫入 ${mk} 薪資結算。`;
+          }
         }
-      } else { App.toast = `已駁回 ${emp.name} 之申請。`; }
+      } else { App.toast = `已駁回 ${emp ? emp.name : ''} 之申請。`; }
       render();
     }
 
@@ -5675,9 +5865,11 @@ end $$;`;
         if (App.liff.managerFilter === 'PENDING') return r.status === 'PENDING';
         if (App.liff.managerFilter === 'LEAVE') return r.kind === 'LEAVE';
         if (App.liff.managerFilter === 'SWAP') return r.kind === 'SWAP';
+        if (App.liff.managerFilter === 'OVERTIME') return r.kind === 'OVERTIME';
         return true;
       });
       const pendingCnt = App.liff.requests.filter(r => r.status === 'PENDING').length;
+      const otCnt = App.liff.requests.filter(r => r.kind === 'OVERTIME').length;
       const activeAp = getActiveLineApprover(App.sched.selectedDate);
 
       return `
@@ -5685,27 +5877,32 @@ end $$;`;
           <div class="bg-white border border-[var(--border)] rounded-xl p-4 space-y-4">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
-                <h2 class="text-sm font-bold text-slate-900">店長線上簽核中心（請假單 & 調班單）</h2>
-                <p class="text-xs text-slate-500 mt-0.5">核准後自動扣除假別餘額、更新排班時間軸與薪資結算</p>
+                <h2 class="text-sm font-bold text-slate-900">店長線上簽核中心（請假單 / 調班單 / 加班單）</h2>
+                <p class="text-xs text-slate-500 mt-0.5">核准後自動同步假別餘額、排班時間軸、加班補休時數與當月薪資結算</p>
               </div>
               <div class="flex items-center gap-1.5 flex-wrap text-xs font-semibold">
                 <button onclick="openLineManagerApproval('LEAVE')" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">
                   ${ICONS.smartphone} 開啟 LINE 店長簽核
                 </button>
-                ${[{ k: 'ALL', l: `全部 (${App.liff.requests.length})` }, { k: 'PENDING', l: `待簽核 (${pendingCnt})` }, { k: 'LEAVE', l: '請假' }, { k: 'SWAP', l: '調班' }].map(f => `
+                ${[{ k: 'ALL', l: `全部 (${App.liff.requests.length})` }, { k: 'PENDING', l: `待簽核 (${pendingCnt})` }, { k: 'LEAVE', l: '請假' }, { k: 'SWAP', l: '調班' }, { k: 'OVERTIME', l: `加班 (${otCnt})` }].map(f => `
                   <button onclick="App.liff.managerFilter='${f.k}';render()" class="px-3 py-1.5 rounded-lg border cursor-pointer ${App.liff.managerFilter===f.k?'bg-slate-900 text-white border-slate-900':'bg-white border-slate-200 text-slate-600'}">${f.l}</button>
                 `).join('')}
               </div>
             </div>
 
             <div class="space-y-3">
-              ${filteredMgrReqs.map(req => {
+              ${filteredMgrReqs.length === 0 ? `<div class="p-6 text-center text-xs text-slate-400">此篩選條件下尚無簽核單據</div>` : filteredMgrReqs.map(req => {
                 const rEmp = App.employees.find(e => e.id === req.employeeId);
+                const kindBadge = req.kind === 'LEAVE'
+                  ? { cls: 'bg-teal-50 text-teal-700', txt: '請假單' }
+                  : req.kind === 'OVERTIME'
+                    ? { cls: 'bg-violet-50 text-violet-700', txt: '加班單' }
+                    : { cls: 'bg-indigo-50 text-indigo-700', txt: '調班單' };
                 return `
                   <div class="rounded-xl border border-slate-200 p-4 space-y-2.5 text-xs bg-slate-50/40">
                     <div class="flex flex-wrap items-center justify-between gap-2">
                       <div class="flex items-center gap-2 flex-wrap">
-                        <span class="px-2 py-0.5 rounded font-semibold ${req.kind==='LEAVE'?'bg-teal-50 text-teal-700':'bg-indigo-50 text-indigo-700'}">${req.kind==='LEAVE' ? '請假單' : '調班單'}</span>
+                        <span class="px-2 py-0.5 rounded font-semibold ${kindBadge.cls}">${kindBadge.txt}</span>
                         <span class="text-sm font-bold text-slate-900">${rEmp ? rEmp.name : ''}</span>
                         <span class="mono-num text-slate-500 font-semibold">${req.date}</span>
                         <span class="font-semibold text-slate-700">${req.summary}</span>
@@ -5719,9 +5916,14 @@ end $$;`;
                     ${req.status === 'PENDING' ? `
                       <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
                         <input id="mgr-note-${req.id}" placeholder="簽核備註（選填）" class="flex-1 min-w-[200px] h-8 px-3 rounded-lg border border-slate-200 bg-white" />
-                        <div class="flex gap-2">
+                        <div class="flex gap-2 flex-wrap">
                           <button onclick="managerSignOff('${req.id}','REJECTED')" class="h-8 px-3.5 rounded-lg border border-slate-200 bg-white hover:bg-rose-50 text-rose-600 font-semibold cursor-pointer">駁回</button>
-                          <button onclick="managerSignOff('${req.id}','APPROVED')" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">核准並同步</button>
+                          ${req.kind === 'OVERTIME' ? `
+                            <button onclick="managerSignOff('${req.id}','APPROVED',false,'PAY')" class="h-8 px-3.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">核准・領加班費</button>
+                            <button onclick="managerSignOff('${req.id}','APPROVED',false,'COMP_OFF')" class="h-8 px-3.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold cursor-pointer">核准・轉補休</button>
+                          ` : `
+                            <button onclick="managerSignOff('${req.id}','APPROVED')" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-semibold cursor-pointer">核准並同步</button>
+                          `}
                         </div>
                       </div>
                     ` : `<div class="text-[11px] text-slate-500">簽核紀錄：${req.managerNote}</div>`}
@@ -5924,31 +6126,67 @@ end $$;`;
                   ${(a.filterDateFrom || a.filterDateTo || a.draftDateFrom || a.draftDateTo) ? `<button type="button" onclick="setAttendanceDatePreset('ALL')" class="h-7 px-2.5 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold cursor-pointer">清除日期</button>` : ''}
                 </div>
               </div>
+              <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[11px]">
+                <div class="flex flex-wrap items-center gap-2 text-slate-600">
+                  <span class="px-2 py-0.5 rounded-md bg-teal-50 border border-teal-200 text-teal-800 font-semibold">
+                    PT 計薪：${(App.storeSettings && App.storeSettings.ptPunchPayMode === 'SCHEDULE_ALIGNED') ? `排班對齊＋超時簽核（寬限 ${App.storeSettings.ptOvertimeGraceMins ?? 10}m）` : '實打實計（依實際打卡分鐘）'}
+                  </span>
+                  <span class="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700 font-semibold">
+                    ${(App.storeSettings && App.storeSettings.ftEarlyOutNoPenalty === false) ? '正職提早下班：依一般早退檢核' : '正職提早離店：不計早退扣薪'}
+                  </span>
+                </div>
+                <button type="button" onclick="App.mainTab='SETTINGS';App.storeSettings.subTab='BASIC';render()" class="text-[#0F766E] hover:underline font-bold cursor-pointer">調整打卡計薪規則 →</button>
+              </div>
             </div>
             <div class="overflow-x-auto">
-              <table class="w-full border-collapse text-left min-w-[780px] text-xs">
-                <thead><tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500"><th class="p-3">日期</th><th class="p-3">員工</th><th class="p-3">排定班次</th><th class="p-3">上班</th><th class="p-3">下班</th><th class="p-3">實計工時</th><th class="p-3">驗證方式</th><th class="p-3">狀態</th></tr></thead>
+              <table class="w-full border-collapse text-left min-w-[820px] text-xs">
+                <thead><tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500"><th class="p-3">日期</th><th class="p-3">員工</th><th class="p-3">排定班次</th><th class="p-3">上班</th><th class="p-3">下班</th><th class="p-3">實計 / 計薪工時</th><th class="p-3">驗證方式</th><th class="p-3">狀態與簽核</th></tr></thead>
                 <tbody>
                   ${filteredLogs.length === 0 ? `
                     <tr><td colspan="8" class="p-8 text-center text-slate-400">此篩選條件下尚無出勤打卡紀錄</td></tr>
                   ` : filteredLogs.map(l => {
-                    const e = App.employees.find(x => x.id === l.employeeId) || { name: '未知' };
+                    const e = App.employees.find(x => x.id === l.employeeId) || { name: '未知', type: 'FT' };
                     const isMiss = l.status === 'MISSING_IN' || l.status === 'MISSING_OUT';
+                    const ev = getAttendanceLogEvaluation(l, e);
+                    const showPayableDiff = !isMiss && e.type === 'PT' && ev.ptMode === 'SCHEDULE_ALIGNED' && ev.actualMins !== ev.payableMins;
                     return `
-                      <tr class="border-b border-slate-100 last:border-b-0 ${isMiss ? 'bg-rose-50/40' : 'hover:bg-slate-50'}">
+                      <tr class="border-b border-slate-100 last:border-b-0 ${isMiss ? 'bg-rose-50/40' : ev.needsPtOtReview ? 'bg-amber-50/40' : 'hover:bg-slate-50'}">
                         <td class="p-3 mono-num font-semibold">${l.date}</td>
-                        <td class="p-3 font-bold text-slate-900">${e.name}</td>
+                        <td class="p-3 font-bold text-slate-900">${e.name} <span class="text-[10px] font-normal text-slate-400">(${e.type || 'FT'})</span></td>
                         <td class="p-3 mono-num text-slate-500">${l.scheduled}</td>
                         <td class="p-3 mono-num font-bold ${!l.clockIn?'text-rose-600':'text-slate-800'}">${l.clockIn || '未打卡'}</td>
                         <td class="p-3 mono-num font-bold ${!l.clockOut?'text-rose-600':'text-slate-800'}">${l.clockOut || '未打卡'}</td>
-                        <td class="p-3 mono-num">${calcWorkedLabel(l.clockIn, l.clockOut)}</td>
+                        <td class="p-3 mono-num">
+                          <div>${calcWorkedLabel(l.clockIn, l.clockOut)}</div>
+                          ${showPayableDiff ? `<div class="text-[10px] font-bold text-[#0F766E]">計薪 ${ev.payableHours}h</div>` : ''}
+                        </td>
                         <td class="p-3 text-slate-500">${l.method}</td>
                         <td class="p-3">
-                          <div class="flex items-center gap-2">
+                          <div class="flex items-center gap-1.5 flex-wrap">
                             <span class="px-2 py-0.5 rounded-md text-[11px] font-semibold ${l.status==='NORMAL'?'bg-emerald-50 text-emerald-700':l.status==='CORRECTED'?'bg-teal-50 text-teal-700':l.status==='LATE'?'bg-amber-50 text-amber-700':'bg-rose-50 text-rose-700'}">
                               ${l.status==='NORMAL'?'正常':l.status==='CORRECTED'?'已補卡':l.status==='LATE'?`遲到 ${l.lateM}m`:'漏打卡'}
                             </span>
                             ${isMiss ? `<button onclick="prefillMissedPunch('${l.employeeId}','${l.date}','${l.status}','${l.clockIn}','${l.clockOut}')" class="px-2 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-800 text-[11px] font-semibold cursor-pointer">補卡</button>` : ''}
+                            ${!isMiss && ev.isFtApprovedEarlyOut ? `<span class="px-2 py-0.5 rounded-md bg-sky-50 border border-sky-200 text-sky-700 text-[10px] font-semibold" title="提早 ${ev.earlyOutMins} 分鐘離店，依店鋪規則不計早退扣薪">提早離店（不計早退）</span>` : ''}
+                            ${!isMiss && ev.needsPtOtReview ? `
+                              <span class="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 text-[10px] font-bold">超時 +${ev.overtimeMins}m</span>
+                              <button type="button" onclick="setPtLogOvertimeDecision('${l.id}','APPROVED')" class="px-2 py-0.5 rounded bg-[#0F766E] hover:bg-[#115E59] text-white text-[10px] font-bold cursor-pointer">✓ 核准超時</button>
+                              <button type="button" onclick="setPtLogOvertimeDecision('${l.id}','REJECTED')" class="px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-600 text-[10px] font-semibold cursor-pointer">依排班</button>
+                            ` : ''}
+                            ${!isMiss && e.type === 'PT' && ev.ptMode === 'SCHEDULE_ALIGNED' && l.ptOvertimeStatus === 'APPROVED' ? `
+                              <button type="button" onclick="setPtLogOvertimeDecision('${l.id}','REJECTED')" title="點擊改為依排班計薪" class="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold cursor-pointer">✓ 已核准超時</button>
+                            ` : ''}
+                            ${!isMiss && e.type === 'PT' && ev.ptMode === 'SCHEDULE_ALIGNED' && l.ptOvertimeStatus === 'REJECTED' ? `
+                              <button type="button" onclick="setPtLogOvertimeDecision('${l.id}','APPROVED')" title="點擊改為核准超時照實計薪" class="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-semibold cursor-pointer">依排班計薪</button>
+                            ` : ''}
+                            ${!isMiss && ev.needsFtOtHint ? `
+                              <span class="px-2 py-0.5 rounded-md bg-violet-50 border border-violet-200 text-violet-800 text-[10px] font-bold">超時 +${ev.overtimeMins}m</span>
+                              <button type="button" onclick="quickCreateFtOvertimeFromLog('${l.id}','PAY')" class="px-2 py-0.5 rounded bg-violet-600 hover:bg-violet-700 text-white text-[10px] font-bold cursor-pointer">＋轉加班費</button>
+                              <button type="button" onclick="quickCreateFtOvertimeFromLog('${l.id}','COMP_OFF')" class="px-2 py-0.5 rounded border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold cursor-pointer">＋轉補休</button>
+                            ` : ''}
+                            ${!isMiss && ev.existingOtReq ? `
+                              <span class="px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold">已立加班單 (${ev.existingOtReq.hours}h)</span>
+                            ` : ''}
                           </div>
                         </td>
                       </tr>
@@ -6193,6 +6431,57 @@ end $$;`;
                 </form>
                 <div class="space-y-1.5 pt-1">
                   ${st.specialClosedDates.map(item => `<div class="flex items-center justify-between px-3 py-2 rounded-lg bg-rose-50/60 border border-rose-200"><span><strong class="mono-num text-rose-700">${item.date}</strong> · ${item.reason}</span><button onclick="removeSpecialClosedDate('${item.id}')" class="text-rose-600 font-semibold cursor-pointer">移除</button></div>`).join('')}
+                </div>
+              </div>
+
+              <!-- 打卡計薪與加班規則（各店自訂） -->
+              <div class="p-4 rounded-xl bg-teal-50/50 border border-teal-200/80 space-y-3.5">
+                <div>
+                  <div class="font-bold text-slate-900">打卡計薪與加班規則（各店自訂）</div>
+                  <div class="text-[11px] text-slate-500 mt-0.5">控制「依打卡紀錄核算工時」與出勤列表的判定方式，即時套用於薪資與出勤模組。</div>
+                </div>
+
+                <div class="space-y-2">
+                  <div class="font-semibold text-slate-700">1. 時薪人員（PT）提早打卡／延後下班計薪模式</div>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    <button type="button" onclick="App.storeSettings.ptPunchPayMode='ACTUAL';App.toast='已切換 PT 計薪為「實打實計（依實際打卡分鐘）」。';render()" class="text-left p-3 rounded-xl border transition cursor-pointer ${(st.ptPunchPayMode||'ACTUAL')==='ACTUAL'?'bg-white border-[#0F766E] ring-2 ring-[#0F766E]/20':'bg-white/70 border-slate-200 hover:border-slate-300'}">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="font-bold text-slate-900">模式 A｜實打實計（預設）</span>
+                        ${(st.ptPunchPayMode||'ACTUAL')==='ACTUAL'?'<span class="px-2 py-0.5 rounded-full bg-teal-100 text-[#0F766E] text-[10px] font-bold">使用中</span>':''}
+                      </div>
+                      <p class="text-[11px] text-slate-500 mt-1 leading-relaxed">依員工實際上下班打卡分鐘數照實計薪，不捨去零頭，最無勞檢爭議。</p>
+                    </button>
+                    <button type="button" onclick="App.storeSettings.ptPunchPayMode='SCHEDULE_ALIGNED';App.toast='已切換 PT 計薪為「排班對齊＋超時簽核」。';render()" class="text-left p-3 rounded-xl border transition cursor-pointer ${st.ptPunchPayMode==='SCHEDULE_ALIGNED'?'bg-white border-[#0F766E] ring-2 ring-[#0F766E]/20':'bg-white/70 border-slate-200 hover:border-slate-300'}">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="font-bold text-slate-900">模式 B｜排班對齊＋超時簽核</span>
+                        ${st.ptPunchPayMode==='SCHEDULE_ALIGNED'?'<span class="px-2 py-0.5 rounded-full bg-teal-100 text-[#0F766E] text-[10px] font-bold">使用中</span>':''}
+                      </div>
+                      <p class="text-[11px] text-slate-500 mt-1 leading-relaxed">提早打卡從排班時間起算；延後下班超過寬限分鐘時於出勤列表標示「超時待核准」，由店長一鍵決定照實計薪或依排班。</p>
+                    </button>
+                  </div>
+                  ${st.ptPunchPayMode === 'SCHEDULE_ALIGNED' ? `
+                    <div class="flex flex-wrap items-center gap-2 pt-1 text-[11px] text-slate-700">
+                      <span>PT 超時寬限：下班打卡超過排班時間</span>
+                      <input type="number" min="0" max="60" value="${st.ptOvertimeGraceMins ?? 10}" onfocus="this.select()" onchange="App.storeSettings.ptOvertimeGraceMins=Math.max(0,Number(this.value)||0);render()" class="w-14 h-7 px-2 rounded-lg border border-teal-300 bg-white text-center mono-num font-bold" />
+                      <span>分鐘以上，即標示「超時待核准」</span>
+                    </div>
+                  ` : ''}
+                </div>
+
+                <div class="pt-2.5 border-t border-teal-200/70 space-y-2.5">
+                  <div class="font-semibold text-slate-700">2. 正職人員（FT）提早離店與超時加班規則</div>
+                  <label class="flex items-start gap-2.5 cursor-pointer select-none">
+                    <input type="checkbox" ${st.ftEarlyOutNoPenalty !== false ? 'checked' : ''} onchange="App.storeSettings.ftEarlyOutNoPenalty=this.checked;App.toast=this.checked?'已啟用：正職提早下班視為同意放行，不計早退扣薪。':'已關閉：正職提早下班將依一般早退檢核。';render()" class="mt-0.5 w-4 h-4 accent-[#0F766E] cursor-pointer" />
+                    <div>
+                      <div class="font-bold text-slate-800">正職提早做完工作提前打卡下班，視為同意放行（不計早退、不扣薪）</div>
+                      <div class="text-[11px] text-slate-500">出勤紀錄僅標示「提早離店（不計早退）」，不會扣全勤或扣減月薪。</div>
+                    </div>
+                  </label>
+                  <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
+                    <span>正職延後打卡超時提醒：下班打卡超過排班時間</span>
+                    <input type="number" min="5" max="120" value="${st.ftOvertimeAlertMins ?? 15}" onfocus="this.select()" onchange="App.storeSettings.ftOvertimeAlertMins=Math.max(5,Number(this.value)||15);render()" class="w-14 h-7 px-2 rounded-lg border border-teal-300 bg-white text-center mono-num font-bold" />
+                    <span>分鐘以上，於出勤紀錄顯示「＋轉加班費 / ＋轉補休」按鈕</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -6908,7 +7197,7 @@ end $$;`;
       const doneItems = [
         ...App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
           const e = App.employees.find(x => x.id === r.employeeId);
-          return { kind: r.kind === 'LEAVE' ? '請假單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia, signedBy: r.signedBy };
+          return { kind: r.kind === 'LEAVE' ? '請假單' : r.kind === 'OVERTIME' ? '加班單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia, signedBy: r.signedBy };
         }),
         ...App.attendance.corrections.filter(c => c.status !== 'PENDING').map(c => {
           const e = App.employees.find(x => x.id === c.employeeId);
@@ -6940,7 +7229,7 @@ end $$;`;
 
           <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
             <button onclick="App.liffMgrFilter='ALL';render()" class="py-1 rounded-md cursor-pointer ${f==='ALL'?'bg-[#06C755] text-white':'text-slate-600'}">全部待簽 (${totalPending})</button>
-            <button onclick="App.liffMgrFilter='LEAVE';render()" class="py-1 rounded-md cursor-pointer ${f==='LEAVE'?'bg-[#06C755] text-white':'text-slate-600'}">請假調班 (${pendingLeave.length})</button>
+            <button onclick="App.liffMgrFilter='LEAVE';render()" class="py-1 rounded-md cursor-pointer ${f==='LEAVE'?'bg-[#06C755] text-white':'text-slate-600'}">假單加班 (${pendingLeave.length})</button>
             <button onclick="App.liffMgrFilter='PUNCH';render()" class="py-1 rounded-md cursor-pointer ${f==='PUNCH'?'bg-[#06C755] text-white':'text-slate-600'}">漏卡補登 (${pendingPunch.length})</button>
           </div>
         </div>
@@ -6949,17 +7238,19 @@ end $$;`;
           <div class="bg-white rounded-xl border border-emerald-200 p-5 text-center space-y-1.5">
             <div class="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 mx-auto">${ICONS.check}</div>
             <div class="font-bold text-slate-900">所有待簽核項目皆已完成</div>
-            <div class="text-[11px] text-slate-500">員工送出新請假、調班或補卡單時，將即時推播至此</div>
+            <div class="text-[11px] text-slate-500">員工送出新請假、調班、加班或補卡單時，將即時推播至此</div>
           </div>
         ` : ''}
 
-        <!-- 待簽核：請假單與調班單 Flex Cards -->
+        <!-- 待簽核：請假單、調班單與加班單 Flex Cards -->
         ${showLeave ? pendingLeave.map(req => {
           const rEmp = App.employees.find(e => e.id === req.employeeId);
+          const hdrCls = req.kind === 'LEAVE' ? 'bg-teal-600' : req.kind === 'OVERTIME' ? 'bg-violet-600' : 'bg-indigo-600';
+          const hdrTxt = req.kind === 'LEAVE' ? '請假簽核通知' : req.kind === 'OVERTIME' ? '加班簽核通知' : '調班簽核通知';
           return `
             <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-              <div class="px-3.5 py-2.5 ${req.kind==='LEAVE'?'bg-teal-600':'bg-indigo-600'} text-white flex items-center justify-between">
-                <span class="font-bold text-[11px]">${req.kind==='LEAVE' ? '請假簽核通知' : '調班簽核通知'}</span>
+              <div class="px-3.5 py-2.5 ${hdrCls} text-white flex items-center justify-between">
+                <span class="font-bold text-[11px]">${hdrTxt}</span>
                 <span class="mono-num text-[10px] opacity-90">${req.date}</span>
               </div>
               <div class="p-3.5 space-y-2">
@@ -6971,10 +7262,18 @@ end $$;`;
                 <div class="text-[11px] text-slate-600">事由：${req.reason}</div>
                 <div class="p-2 rounded-lg bg-emerald-50 border border-emerald-200/80 text-[11px] text-emerald-800">${req.aiCheck}</div>
                 <input id="line-mgr-note-${req.id}" placeholder="LINE 簽核備註（選填）" class="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-[11px]" />
-                <div class="grid grid-cols-2 gap-2 pt-0.5">
-                  <button onclick="managerSignOff('${req.id}','REJECTED',true)" class="h-8 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold cursor-pointer">駁回</button>
-                  <button onclick="managerSignOff('${req.id}','APPROVED',true)" class="h-8 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">LINE 核准並同步</button>
-                </div>
+                ${req.kind === 'OVERTIME' ? `
+                  <div class="grid grid-cols-3 gap-1.5 pt-0.5 text-[11px]">
+                    <button onclick="managerSignOff('${req.id}','REJECTED',true)" class="h-8 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold cursor-pointer">駁回</button>
+                    <button onclick="managerSignOff('${req.id}','APPROVED',true,'PAY')" class="h-8 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">核准加班費</button>
+                    <button onclick="managerSignOff('${req.id}','APPROVED',true,'COMP_OFF')" class="h-8 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold cursor-pointer">核准轉補休</button>
+                  </div>
+                ` : `
+                  <div class="grid grid-cols-2 gap-2 pt-0.5">
+                    <button onclick="managerSignOff('${req.id}','REJECTED',true)" class="h-8 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold cursor-pointer">駁回</button>
+                    <button onclick="managerSignOff('${req.id}','APPROVED',true)" class="h-8 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">LINE 核准並同步</button>
+                  </div>
+                `}
               </div>
             </div>
           `;
@@ -7222,10 +7521,11 @@ end $$;`;
               ` : ''}
 
               ${mode === 'LEAVE' ? `
-                <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold">
+                <div class="grid grid-cols-4 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
                   <button onclick="App.liff.phoneTab='BALANCES';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='BALANCES'?'bg-[#06C755] text-white':'text-slate-600'}">假別餘額</button>
                   <button onclick="App.liff.phoneTab='LEAVE_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='LEAVE_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">請假</button>
                   <button onclick="App.liff.phoneTab='SWAP_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='SWAP_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">調班</button>
+                  <button onclick="App.liff.phoneTab='OT_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='OT_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">申請加班</button>
                 </div>
                 ${App.liff.phoneTab === 'BALANCES' ? (() => {
                   const annRem = Math.max(0, bal.annualTotal - bal.annualUsed);
@@ -7295,7 +7595,51 @@ end $$;`;
                     <input value="${App.liff.leaveDraft.reason}" oninput="App.liff.leaveDraft.reason=this.value" placeholder="請假事由" class="w-full h-8 px-2.5 rounded border border-slate-200" />
                     <button type="submit" class="w-full h-9 rounded-lg bg-[#06C755] text-white font-bold cursor-pointer">送出請假單</button>
                   </form>
-                ` : `
+                ` : App.liff.phoneTab === 'OT_FORM' ? (() => {
+                  if (!App.liff.overtimeDraft) App.liff.overtimeDraft = { date: '2026-11-28', hours: 1.5, compensation: 'PAY', reason: '' };
+                  const od = App.liff.overtimeDraft;
+                  const myOtReqs = (App.liff.requests || []).filter(r => r.kind === 'OVERTIME' && r.employeeId === emp.id).slice(0, 5);
+                  return `
+                    <form onsubmit="submitLiffOvertimeRequest(event)" class="bg-white rounded-lg p-3.5 border border-slate-200 space-y-2.5">
+                      <div class="font-bold text-slate-900 text-xs">線上申請加班（主管核准後即時同步）</div>
+                      <div class="grid grid-cols-2 gap-2">
+                        <div>
+                          <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">加班日期</label>
+                          <input type="date" value="${od.date}" onchange="App.liff.overtimeDraft.date=this.value" class="w-full h-8 px-2 rounded border border-slate-200 mono-num" />
+                        </div>
+                        <div>
+                          <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">加班時數 (h)</label>
+                          <input type="number" step="0.5" min="0.5" max="12" value="${od.hours}" oninput="App.liff.overtimeDraft.hours=Number(this.value)||0.5" class="w-full h-8 px-2 rounded border border-slate-200 mono-num font-bold" />
+                        </div>
+                      </div>
+                      <div>
+                        <label class="block text-[10px] font-semibold text-slate-500 mb-0.5">補償方式（依勞基法第 24 / 32-1 條）</label>
+                        <select onchange="App.liff.overtimeDraft.compensation=this.value" class="w-full h-8 px-2 rounded border border-slate-200 font-semibold">
+                          <option value="PAY" ${od.compensation==='PAY'?'selected':''}>領加班費（前 2h 1.34 倍／第 3h 起 1.67 倍）</option>
+                          <option value="COMP_OFF" ${od.compensation==='COMP_OFF'?'selected':''}>轉加班補休（1:1 存入補休餘額）</option>
+                        </select>
+                      </div>
+                      <input value="${od.reason || ''}" oninput="App.liff.overtimeDraft.reason=this.value" placeholder="加班事由（例：晚間客潮收班清潔）" class="w-full h-8 px-2.5 rounded border border-slate-200" />
+                      <button type="submit" class="w-full h-9 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-bold cursor-pointer">送出加班申請</button>
+                    </form>
+                    ${myOtReqs.length ? `
+                      <div class="bg-white rounded-lg p-3 border border-slate-200 space-y-1.5">
+                        <div class="text-[11px] font-bold text-slate-700">近期加班申請紀錄</div>
+                        ${myOtReqs.map(r => `
+                          <div class="flex items-center justify-between text-[11px] py-1 border-t border-slate-100 first:border-t-0">
+                            <div>
+                              <span class="mono-num font-semibold text-slate-800">${r.date}</span>
+                              <span class="text-slate-600 ml-1">${r.hours}h (${r.compensation==='COMP_OFF'?'轉補休':'加班費'})</span>
+                            </div>
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${r.status==='PENDING'?'bg-amber-50 text-amber-700':r.status==='APPROVED'?'bg-emerald-50 text-emerald-700':'bg-rose-50 text-rose-700'}">
+                              ${r.status==='PENDING'?'待審核':r.status==='APPROVED'?'已核准':'已駁回'}
+                            </span>
+                          </div>
+                        `).join('')}
+                      </div>
+                    ` : ''}
+                  `;
+                })() : `
                   <form onsubmit="submitLiffSwapRequest(event)" class="bg-white rounded-lg p-3.5 border border-slate-200 space-y-2.5">
                     <select onchange="App.liff.swapDraft.date=this.value;render()" class="w-full h-8 px-2 rounded border border-slate-200 font-semibold">${FORECASTS.map(d => `<option value="${d.date}" ${App.liff.swapDraft.date===d.date?'selected':''}>${d.shortDate} (${d.dayLabel})</option>`).join('')}</select>
                     <select onchange="App.liff.swapDraft.targetEmpId=this.value" class="w-full h-8 px-2 rounded border border-slate-200 font-semibold">${App.employees.filter(x=>x.id!==emp.id).map(x => `<option value="${x.id}">${x.name}</option>`).join('')}</select>
