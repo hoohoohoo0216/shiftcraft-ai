@@ -4122,19 +4122,25 @@ end $$;`;
             <div class="grid grid-cols-4 lg:grid-cols-7 gap-1">
               ${weekDays.map(d => {
                 const st = dayStats[d.date];
+                const hol = TAIWAN_HOLIDAYS_2026.find(h => h.date === d.date);
                 const isSel = App.sched.viewMode === 'DAY_TIMELINE' && App.sched.selectedDate === d.date;
+                const holShort = hol ? (hol.kind === '選舉日' ? '選舉日' : hol.name.replace(/（.*?）/g, '')) : '';
                 return `
                   <button
                     onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()"
-                    class="px-2.5 py-1.5 rounded-lg text-left transition cursor-pointer flex items-center justify-between gap-1 ${
-                      isSel ? 'bg-[#0F766E] text-white' : st.isClosed ? 'bg-slate-50 text-slate-400' : 'hover:bg-slate-50 text-slate-700'
+                    title="${hol ? `${hol.name}（${hol.law}）` : `${d.shortDate} ${d.dayLabel}`}"
+                    class="px-2.5 py-1.5 rounded-lg text-left transition cursor-pointer flex items-center justify-between gap-1 border ${
+                      isSel ? 'bg-[#0F766E] text-white border-[#0F766E]' : hol ? (hol.kind === '選舉日' ? 'bg-indigo-50/70 border-indigo-200 text-indigo-950 hover:bg-indigo-50' : 'bg-amber-50/70 border-amber-200 text-amber-950 hover:bg-amber-50') : st.isClosed ? 'bg-slate-50 border-transparent text-slate-400' : 'border-transparent hover:bg-slate-50 text-slate-700'
                     }"
                   >
-                    <div>
-                      <div class="text-[10px] font-medium ${isSel ? 'text-teal-100' : 'text-slate-500'}">${d.dayLabel}</div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-1">
+                        <span class="text-[10px] font-medium ${isSel ? 'text-teal-100' : 'text-slate-500'}">${d.dayLabel}</span>
+                        ${hol ? `<span class="text-[9px] px-1 py-0.2 rounded font-bold truncate ${isSel ? 'bg-white/25 text-white' : (hol.kind === '選舉日' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-800')}">${holShort}</span>` : ''}
+                      </div>
                       <div class="text-xs font-bold mono-num">${d.shortDate}</div>
                     </div>
-                    <span class="text-[10px] font-semibold mono-num px-1.5 py-0.5 rounded ${isSel ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}">
+                    <span class="text-[10px] font-semibold mono-num px-1.5 py-0.5 rounded shrink-0 ${isSel ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}">
                       ${st.isClosed ? '休' : `${st.count}人`}
                     </span>
                   </button>
@@ -4148,8 +4154,13 @@ end $$;`;
             <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
               <!-- 工具頭 -->
               <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
-                <div class="flex items-center gap-3 flex-wrap">
+                <div class="flex items-center gap-2.5 flex-wrap">
                   <h2 class="text-sm font-bold text-slate-900 mono-num">${selForecast.shortDate} ${selForecast.dayLabel}</h2>
+                  ${(() => {
+                    const selHol = TAIWAN_HOLIDAYS_2026.find(h => h.date === selDate);
+                    if (!selHol) return '';
+                    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border ${selHol.kind === '選舉日' ? 'bg-indigo-50 border-indigo-200 text-indigo-800' : 'bg-amber-50 border-amber-200 text-amber-800'}" title="${selHol.law}">📅 ${selHol.name}（${selHol.kind}）</span>`;
+                  })()}
                   <span class="text-xs text-slate-500 mono-num">
                     ${dayCfg.isClosed ? '當日店休' : (() => { const dRev = getDayEstimatedRevenue(selDate); return `已排 ${curDayStat.count} 人 · ${fmtDurationZh(curDayStat.hours)}${dRev > 0 ? ` · 預估 $${(dRev/1000).toFixed(1)}k` : ''}`; })()}
                   </span>
@@ -4271,19 +4282,32 @@ end $$;`;
             </div>
           ` : App.sched.viewMode === 'MONTH_GRID' ? (() => {
             const mInfo = getMonthCalendarDays(selDate);
+            const mKey = `${mInfo.year}-${String(mInfo.month).padStart(2, '0')}`;
+            const mHolidays = TAIWAN_HOLIDAYS_2026.filter(h => h.monthKey === mKey);
             const prevMonthAnchor = _fmtYmd(new Date(mInfo.year, mInfo.month - 2, 1));
             const nextMonthAnchor = _fmtYmd(new Date(mInfo.year, mInfo.month, 1));
             return `
               <!-- 整月預排總覽 -->
               <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
                 <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap justify-between items-center gap-2 text-xs">
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-2 flex-wrap">
                     <button onclick="jumpSchedToDate('${prevMonthAnchor}');App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">◀ 上個月</button>
                     <h2 class="text-sm font-bold text-slate-900 mono-num">${mInfo.year} 年 ${mInfo.month} 月 整月班表</h2>
                     <button onclick="jumpSchedToDate('${nextMonthAnchor}');App.sched.viewMode='MONTH_GRID';render()" class="h-7 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer">下個月 ▶</button>
                   </div>
                   <span class="text-[11px] text-slate-500">點擊任一格可直接排班，點擊日期可切換單日時間軸</span>
                 </div>
+                ${mHolidays.length > 0 ? `
+                  <div class="px-4 py-2 border-b border-[var(--border)] bg-amber-50/60 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span class="font-bold text-amber-900">📅 本月國定假日／選舉日：</span>
+                    ${mHolidays.map(h => `
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white border ${h.kind === '選舉日' ? 'border-indigo-200 text-indigo-800' : 'border-amber-200 text-amber-900'} font-semibold" title="${h.law}">
+                        <span class="mono-num font-bold">${h.date.slice(5)}</span>
+                        <span>${h.name}</span>
+                      </span>
+                    `).join('')}
+                  </div>
+                ` : ''}
                 <div class="overflow-x-auto">
                   <table class="w-full border-collapse text-left text-xs" style="min-width: ${160 + mInfo.days.length * 46}px;">
                     <thead>
@@ -4291,10 +4315,12 @@ end $$;`;
                         <th class="p-2.5 w-[150px] sticky left-0 bg-slate-50 z-10 border-r border-[var(--border)]">員工 / 月總時數</th>
                         ${mInfo.days.map(d => {
                           const isClosed = getEffectiveDayConfig(d.date).isClosed;
+                          const hol = TAIWAN_HOLIDAYS_2026.find(h => h.date === d.date);
                           return `
-                            <th onclick="jumpSchedToDate('${d.date}')" class="p-1.5 text-center border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-teal-50 ${isClosed ? 'bg-slate-100/80 text-slate-400' : (d.isPeak ? 'bg-amber-50/50 text-amber-800' : '')}">
+                            <th onclick="jumpSchedToDate('${d.date}')" title="${hol ? `${hol.name}（${hol.law}）` : `${d.shortDate} ${d.dayLabel}`}" class="p-1.5 text-center border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-teal-50 ${hol ? (hol.kind === '選舉日' ? 'bg-indigo-100/70 text-indigo-900' : 'bg-amber-100/70 text-amber-900') : isClosed ? 'bg-slate-100/80 text-slate-400' : (d.isPeak ? 'bg-amber-50/50 text-amber-800' : '')}">
                               <div class="text-[10px]">${d.dayLabel.replace('週','')}</div>
                               <div class="mono-num font-bold">${d.dayNum}</div>
+                              ${hol ? `<div class="text-[9px] leading-tight font-bold px-1 rounded mt-0.5 ${hol.kind === '選舉日' ? 'bg-indigo-600 text-white' : 'bg-amber-600 text-white'}">${hol.kind === '選舉日' ? '選' : '假'}</div>` : ''}
                             </th>
                           `;
                         }).join('')}
@@ -4351,7 +4377,11 @@ end $$;`;
                   <thead>
                     <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
                       <th class="p-3 w-[160px] border-r border-[var(--border)]">員工 / 週總時數</th>
-                      ${weekDays.map(d => `<th class="p-2.5 text-center border-r border-[var(--border)] last:border-r-0 cursor-pointer hover:text-[#0F766E]" onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()">${d.dayLabel} ${d.shortDate}</th>`).join('')}
+                      ${weekDays.map(d => {
+                        const hol = TAIWAN_HOLIDAYS_2026.find(h => h.date === d.date);
+                        const holShort = hol ? (hol.kind === '選舉日' ? '選舉日' : hol.name.replace(/（.*?）/g, '')) : '';
+                        return `<th class="p-2.5 text-center border-r border-[var(--border)] last:border-r-0 cursor-pointer hover:text-[#0F766E] ${hol ? (hol.kind === '選舉日' ? 'bg-indigo-50/70 text-indigo-900' : 'bg-amber-50/70 text-amber-900') : ''}" title="${hol ? `${hol.name}（${hol.law}）` : ''}" onclick="App.sched.viewMode='DAY_TIMELINE';App.sched.selectedDate='${d.date}';render()"><div>${d.dayLabel} ${d.shortDate}</div>${hol ? `<div class="text-[10px] font-bold mt-0.5 px-1.5 py-0.2 rounded inline-block ${hol.kind === '選舉日' ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-100 text-amber-800'}">${holShort}</div>` : ''}</th>`;
+                      }).join('')}
                     </tr>
                   </thead>
                   <tbody>
