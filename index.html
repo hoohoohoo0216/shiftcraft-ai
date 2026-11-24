@@ -697,35 +697,35 @@
 
     const SAAS_PLANS = [
       {
-        code: 'STARTER', name: '基本方案', badge: '單店首選', monthlyPrice: 690, maxStaff: '單店 15 名員工內',
-        desc: '打卡和算薪功能，適合單店 15 名員工以內的小型餐飲門市',
+        code: 'STARTER', name: '基本方案', badge: '單店首選', monthlyPrice: 690, maxStaff: '單店 15 名在職員工內',
+        desc: '人事、打卡與算薪完整工具，適合 15 名員工以內的小型餐飲門市',
         features: [
-          'LINE LIFF 員工上下班打卡與補卡申請',
-          '勞健保級距自動試算與每月薪資結算',
-          '電子薪資條發送與銀行薪轉 CSV 匯出',
-          '單店 15 名員工以內完整使用',
+          '員工建檔、證件浮水印加密儲存與權限管理',
+          'LINE 員工上下班打卡、補卡與基本請假紀錄',
+          '勞健保級距自動試算、每月算薪與電子薪資條',
+          '銀行整批薪轉 CSV 匯出（支援各大銀行）',
+          '單店 15 名在職員工以內完整使用',
         ],
       },
       {
-        code: 'PRO', name: '進階方案', badge: '最受歡迎', monthlyPrice: 1290, maxStaff: '單店 30 名員工內',
-        desc: '基本功能 + 智慧排班系統，適合單店 30 名員工以內的成長門市',
+        code: 'PRO', name: '進階方案', badge: '最受歡迎', monthlyPrice: 1290, maxStaff: '單店 30 名在職員工內',
+        desc: '基本功能 + 智慧排班與人力成本控管，適合 30 人以內成長門市與多店加購',
         features: [
-          '含基本方案全部打卡與算薪功能',
-          '24 小時跨夜排班系統與台灣勞基法合規檢查',
-          'LINE 請假、調班與店長即時簽核推播',
-          '人事證件拍照建檔與權限分級管理',
-          '單店 30 名員工以內完整使用',
+          '含基本方案全部人事、打卡與算薪功能',
+          '單日／全週／整月排班系統、複製班表與跨夜排班',
+          '台灣勞基法合規檢查與人力佔營收比（含後勤攤提）',
+          'LINE 線上請假、調班與店長即時簽核',
+          '單店 30 名在職員工以內，支援多門市按店數加購',
         ],
       },
       {
-        code: 'ENTERPRISE', name: '頂級方案', badge: '專屬顧問', monthlyPrice: 2890, maxStaff: '單店 30 名以上員工',
-        desc: '全部功能 + 一對一專屬客服顧問，適合單店 30 名以上員工的大型門市或連鎖品牌',
+        code: 'ENTERPRISE', name: '頂級方案', badge: '大型／連鎖', monthlyPrice: 2890, maxStaff: '單店不限員工人數',
+        desc: '全功能不限人數 + 專屬導入顧問，適合 30 人以上大型門市或連鎖總部',
         features: [
           '含進階方案全部排班、打卡、請假與算薪功能',
-          '一對一專屬客服顧問與導入協助',
-          '多門市雲端即時同步與總部跨店管理',
-          '繁中 / English / 日本語多語系與優先技術支援',
-          '單店 30 名以上員工不限人數使用',
+          '單店 30 名以上在職員工不限人數使用',
+          '多門市雲端即時同步與總部跨店權限管理',
+          '專屬 LINE 導入顧問與優先技術支援',
         ],
       },
     ];
@@ -819,7 +819,7 @@
         maxStores: Math.max(1, Number(a.maxStores) || 1),
         maxStaffPerStore,
         canUseScheduling: effectivePlan !== 'STARTER',
-        canUseLeaveApproval: effectivePlan !== 'STARTER',
+        canUseLeaveApproval: true,
       };
     }
 
@@ -5817,7 +5817,7 @@ end $$;`;
                   ${statusBadge}
                 </div>
                 <div class="text-xs text-slate-500 mt-0.5 mono-num">
-                  帳號：${a.email || '—'} · 門市額度：${App.multiStore.stores.length} / ${ent.maxStores} 店 · 單店人數：${App.employees.length} / ${staffLimitText}
+                  帳號：${a.email || '—'} · 門市額度：${App.multiStore.stores.length} / ${ent.maxStores} 店 · 在職人數：${getActiveEmployees().length} / ${staffLimitText}
                   ${!ent.isDemo ? ` · 到期日：${ent.expiresDateStr}（${ent.isExpired ? '已到期' : '剩餘 ' + ent.daysLeft + ' 天'}）` : ''}
                 </div>
               </div>
