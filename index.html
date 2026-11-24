@@ -1497,14 +1497,21 @@
           if (!signInErr && signInData && signInData.user) {
             authUser = signInData.user;
           } else {
-            // 若 Supabase Auth 尚未建立此舊帳號，嘗試無痛遷移舊帳號
-            const legHash = await hashAccountPasswordLegacy(email, password);
+            // 若 Supabase Auth 尚未建立此舊帳號，嘗試無痛遷移（同時支援 PBKDF2 與舊版 SHA-256）
+            let candidateHash = await hashAccountPasswordLegacy(email, password);
             let legacyValid = false;
+            try {
+              const { data: saltInfo, error: saltErr } = await sb.rpc('get_legacy_salt_params', { p_email: email });
+              if (!saltErr && saltInfo && saltInfo.mode === 'PBKDF2' && saltInfo.salt) {
+                candidateHash = await hashAccountPassword(email, password, saltInfo.salt, Number(saltInfo.iterations) || 100000);
+              }
+            } catch (ex) {}
+
             // 優先透過 SECURITY DEFINER RPC 驗證舊帳號（RLS 開啟後也能安全遷移）
             try {
               const { data: rpcOk, error: rpcErr } = await sb.rpc('verify_legacy_account', {
                 p_email: email,
-                p_legacy_hash: legHash,
+                p_legacy_hash: candidateHash,
               });
               if (!rpcErr && rpcOk === true) legacyValid = true;
             } catch (ex) {}
@@ -1530,11 +1537,19 @@
 
             if (legacyValid) {
               // 自動將舊帳號建立至 Supabase Auth 並綁定 auth_user_id
-              const { data: migSignUp, error: migErr } = await sb.auth.signUp({ email, password });
+              const redirectTo = window.location.origin + window.location.pathname;
+              const { data: migSignUp, error: migErr } = await sb.auth.signUp({
+                email,
+                password,
+                options: { emailRedirectTo: redirectTo },
+              });
               if (!migErr && migSignUp && migSignUp.session && migSignUp.user) {
                 authUser = migSignUp.user;
                 try {
-                  await sb.rpc('claim_legacy_account', { p_email: email, p_legacy_hash: legHash });
+                  await sb.rpc('claim_legacy_account', { p_email: email, p_legacy_hash: candidateHash });
+                } catch (ex) {}
+                try {
+                  await sb.rpc('claim_account_by_verified_email');
                 } catch (ex) {}
                 if (preRlsAcc) {
                   try {
@@ -1545,6 +1560,12 @@
                     }).eq('email', email);
                   } catch (ex) {}
                 }
+              } else if (!migErr && migSignUp && migSignUp.user && !migSignUp.session) {
+                clearLoginFailures(email);
+                App.auth.authBusy = false;
+                App.auth.authSuccessMsg = `📧 已為您的既有帳號啟動安全升級！驗證信已寄至 ${email}，請點擊信中確認連結後再回來登入，原本門市資料皆完整保留。`;
+                render();
+                return;
               } else if (preRlsAcc) {
                 // 若 Supabase 要求信箱驗證，過渡期仍允許舊帳號登入
                 usedLegacyFallback = true;
@@ -1590,7 +1611,18 @@
           if (selErr) throw selErr;
 
           if (!acc) {
-            // 若剛完成信箱驗證的首次登入，自動建立門市空間
+            // 若為剛驗證完信箱的既有舊帳號，先透過 verified email 自動認領原有品牌
+            try {
+              const { data: claimed } = await sb.rpc('claim_account_by_verified_email');
+              if (claimed) {
+                const reSel = await sb.from('shiftcraft_accounts').select('*').eq('email', email).maybeSingle();
+                if (!reSel.error && reSel.data) acc = reSel.data;
+              }
+            } catch (ex) {}
+          }
+
+          if (!acc) {
+            // 若為全新註冊且剛完成信箱驗證的首次登入，自動建立門市空間
             let pending = null;
             try { pending = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null'); } catch (ex) {}
             const meta = (authUser && authUser.user_metadata) || {};
