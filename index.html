@@ -2877,6 +2877,16 @@ end $$;`;
       render();
     }
 
+    function calcWorkedHoursFromPunch(inStr, outStr) {
+      if (!inStr || !outStr) return 0;
+      const [ih, im] = String(inStr).split(':').map(Number);
+      const [oh, om] = String(outStr).split(':').map(Number);
+      if ([ih, im, oh, om].some(isNaN)) return 0;
+      let mins = (oh * 60 + om) - (ih * 60 + im);
+      if (mins <= 0) mins += 1440;
+      return Math.round((mins / 60) * 10) / 10;
+    }
+
     function evalMonthlyHolidayCompliance(monthKey) {
       const mk = monthKey || App.payroll.monthKey;
       // 僅針對真正法定國定假日與選舉日逐人判定（不含僅適用於週六日休假制之政府補假）
@@ -2889,20 +2899,25 @@ end $$;`;
         const dayResults = statutoryDays.map(h => {
           const isStoreClosed = getEffectiveDayConfig(h.date).isClosed;
           const sh = (App.sched.shifts || []).find(s => s.employeeId === emp.id && s.date === h.date);
-          const workedHours = isStoreClosed ? 0 : getShiftNetHours(sh);
+          const punchLog = (App.attendance.logs || []).find(l => l.employeeId === emp.id && l.date === h.date && l.clockIn && l.clockOut);
+          const hasPunch = Boolean(punchLog);
+          const workedHours = hasPunch ? calcWorkedHoursFromPunch(punchLog.clockIn, punchLog.clockOut) : (isStoreClosed ? 0 : getShiftNetHours(sh));
+          const sourceTag = hasPunch ? '實打' : '排班預估';
           if (h.kind === '選舉日' && emp.nationalityType === 'FOREIGN') {
             return {
               holiday: h,
               status: 'NO_VOTE_RIGHT',
               hours: workedHours,
+              source: hasPunch ? 'PUNCH' : 'SCHED',
               label: workedHours > 0 ? '外籍無投票權・正常計薪' : '外籍無投票權',
             };
           }
-          if (emp.isBackOfficeFixed) {
+          if (emp.isBackOfficeFixed && !hasPunch) {
             return {
               holiday: h,
               status: 'HOLIDAY_OFF',
               hours: 0,
+              source: 'FIXED',
               label: h.kind === '選舉日' ? '後勤固定制（依法放假）' : '後勤固定制（依政府行事曆）',
             };
           }
@@ -2911,25 +2926,26 @@ end $$;`;
               holiday: h,
               status: 'DOUBLE_PAY',
               hours: workedHours,
-              label: emp.type === 'FT' ? '雙倍薪 (+1日)' : `雙倍時薪 (${workedHours}h)`,
+              source: hasPunch ? 'PUNCH' : 'SCHED',
+              label: emp.type === 'FT' ? `雙倍薪 +1日 (${sourceTag})` : `雙倍時薪 ${workedHours}h (${sourceTag})`,
             };
           }
           if (emp.type === 'PT') {
-            return { holiday: h, status: 'PT_OFF', hours: 0, label: isStoreClosed ? '店休未出勤' : '未排班' };
+            return { holiday: h, status: 'PT_OFF', hours: 0, source: 'NONE', label: isStoreClosed ? '店休未出勤' : '未排班' };
           }
           // 依勞動部函釋：選舉投票日遇休息日或例假日，原即無須出勤，依法「不另予補假」
           if (h.kind === '選舉日') {
-            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '選舉日未出勤（不另補假）' };
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, source: 'NONE', label: '選舉日未出勤（不另補假）' };
           }
           // 正職 FT 國定假日未出勤：區分「國定假日放假」vs「撞門市公休／例假／休息日須補假」
           if (sh && sh.shiftCode === 'OFF_HOLIDAY') {
-            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '國定假日放假' };
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, source: 'SCHED', label: '國定假日放假' };
           }
           if (sh && sh.shiftCode === 'OFF_HOLIDAY_COMP') {
-            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '國假補休' };
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, source: 'SCHED', label: '國假補休' };
           }
           const reason = isStoreClosed ? '撞門市公休' : (sh && sh.shiftCode === 'OFF_REG' ? '撞例假日' : '撞休息日');
-          return { holiday: h, status: 'NEED_COMP', hours: 0, reason, label: `${reason}・須補假` };
+          return { holiday: h, status: 'NEED_COMP', hours: 0, reason, source: 'SCHED', label: `${reason}・須補假` };
         });
         const doublePayDates = dayResults.filter(r => r.status === 'DOUBLE_PAY').map(r => r.holiday.date);
         const doublePayHoursPT = dayResults.filter(r => r.status === 'DOUBLE_PAY').reduce((acc, r) => acc + (r.hours || 0), 0);
@@ -2939,6 +2955,51 @@ end $$;`;
         return { emp, dayResults, doublePayDates, doublePayHoursPT, needCompDates, compTakenDates, compTakenCount, compUnresolvedCount };
       });
       return { statutoryDays, rows };
+    }
+
+    function syncPayrollFromAttendanceLogs(monthKey) {
+      const mk = monthKey || App.payroll.monthKey;
+      const monthMeta = PAYROLL_MONTHS.find(m => m.key === mk) || { key: mk, label: mk };
+      const statutoryMap = new Map(
+        TAIWAN_HOLIDAYS_2026.filter(h => h.monthKey === mk && h.kind !== '補假').map(h => [h.date, h])
+      );
+      let syncedEmps = 0;
+      let totalPunches = 0;
+      getActiveEmployees().forEach(emp => {
+        const logs = (App.attendance.logs || []).filter(l => l.employeeId === emp.id && l.date && l.date.startsWith(mk) && l.clockIn && l.clockOut);
+        if (logs.length === 0) return;
+        const rec = ensurePayrollAtt(mk, emp);
+        let regHours = 0;
+        let holHours = 0;
+        const holDates = [];
+        logs.forEach(l => {
+          const h = calcWorkedHoursFromPunch(l.clockIn, l.clockOut);
+          totalPunches++;
+          const holMeta = statutoryMap.get(l.date);
+          const isEligibleHoliday = Boolean(holMeta && !(holMeta.kind === '選舉日' && emp.nationalityType === 'FOREIGN'));
+          if (isEligibleHoliday) {
+            holHours += h;
+            if (!holDates.includes(l.date)) holDates.push(l.date);
+          } else {
+            regHours += h;
+          }
+        });
+        if (emp.type === 'PT') {
+          rec.regH = Math.round(regHours * 10) / 10;
+          rec.holidayHoursPT = Math.round(holHours * 10) / 10;
+          rec.holidaysWorked = holDates;
+        } else {
+          rec.holidaysWorked = holDates;
+        }
+        rec.manualLateOverride = false;
+        syncedEmps++;
+      });
+      if (syncedEmps === 0) {
+        App.toast = `${monthMeta.label}尚無完整的上下班打卡紀錄，目前維持排班預估或手動輸入數值。`;
+      } else {
+        App.toast = `✅ 已依 ${monthMeta.label} 實際打卡紀錄（共 ${totalPunches} 筆）自動核算 ${syncedEmps} 位員工之出勤工時與國定假日雙倍薪！`;
+      }
+      render();
     }
 
     function syncHolidayPayFromSchedule(monthKey, includeUnresolvedComp) {
@@ -5238,6 +5299,9 @@ end $$;`;
               <select onchange="App.payroll.monthKey=this.value;App.payroll.bankPayDate=getDefaultPayDate(this.value);render()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
                 ${PAYROLL_MONTHS.map(m => `<option value="${m.key}" ${m.key===mk?'selected':''}>${m.label}</option>`).join('')}
               </select>
+              <button onclick="syncPayrollFromAttendanceLogs('${mk}')" class="h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">
+                🔄 依打卡紀錄核算工時
+              </button>
               <button onclick="App.payroll.showRulesBar=!App.payroll.showRulesBar;render()" class="h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">
                 出勤扣款規則設定
               </button>
