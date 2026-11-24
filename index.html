@@ -119,17 +119,28 @@
     ];
 
     const TAIWAN_HOLIDAYS_2026 = [
-      { date: '2026-01-01', monthKey: '2026-01', name: '元旦', law: '勞基法第 37、39 條' },
-      { date: '2026-10-10', monthKey: '2026-10', name: '國慶日', law: '勞基法第 37、39 條' },
-      { date: '2026-10-25', monthKey: '2026-10', name: '光復節', law: '紀念日及節日實施條例' },
-      { date: '2026-12-25', monthKey: '2026-12', name: '行憲紀念日', law: '紀念日及節日實施條例' },
+      { date: '2026-01-01', monthKey: '2026-01', name: '元旦（開國紀念日）', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-02-16', monthKey: '2026-02', name: '農曆除夕', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-02-17', monthKey: '2026-02', name: '農曆春節初一', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-02-18', monthKey: '2026-02', name: '農曆春節初二', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-02-19', monthKey: '2026-02', name: '農曆春節初三', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-02-28', monthKey: '2026-02', name: '和平紀念日', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-04-04', monthKey: '2026-04', name: '兒童節', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-04-05', monthKey: '2026-04', name: '清明節', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-05-01', monthKey: '2026-05', name: '勞動節', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-06-19', monthKey: '2026-06', name: '端午節', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-09-25', monthKey: '2026-09', name: '中秋節', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-09-28', monthKey: '2026-09', name: '教師節', kind: '國定假日', law: '紀念日及節日實施條例（出勤雙倍工資）' },
+      { date: '2026-10-10', monthKey: '2026-10', name: '國慶日', kind: '國定假日', law: '勞基法第 37、39 條（出勤雙倍工資）' },
+      { date: '2026-10-25', monthKey: '2026-10', name: '台灣光復節', kind: '國定假日', law: '紀念日及節日實施條例（出勤雙倍工資）' },
+      { date: '2026-11-28', monthKey: '2026-11', name: '九合一地方公職人員選舉投票日', kind: '選舉日', law: '勞基法第 37 條指定放假日（具投票權者出勤加給工資）' },
+      { date: '2026-12-25', monthKey: '2026-12', name: '行憲紀念日', kind: '國定假日', law: '紀念日及節日實施條例（出勤雙倍工資）' },
     ];
 
-    const PAYROLL_MONTHS = [
-      { key: '2026-10', label: '2026 年 10 月（含雙國定假日）' },
-      { key: '2026-11', label: '2026 年 11 月（常態結算）' },
-      { key: '2026-12', label: '2026 年 12 月（含 12/25 行憲紀念日）' },
-    ];
+    const PAYROLL_MONTHS = Array.from({ length: 12 }, (_, idx) => {
+      const m = idx + 1;
+      return { key: `2026-${String(m).padStart(2, '0')}`, label: `2026 年 ${m} 月` };
+    });
 
     const TAIWAN_BANKS = [
       { code: '822', name: '中國信託商業銀行' }, { code: '013', name: '國泰世華商業銀行' },
@@ -2796,10 +2807,51 @@ end $$;`;
       render();
     }
 
+    function ensurePayrollAtt(mk, emp) {
+      if (!App.payroll.attByMonth[mk]) App.payroll.attByMonth[mk] = {};
+      if (!App.payroll.attByMonth[mk][emp.id]) {
+        App.payroll.attByMonth[mk][emp.id] = {
+          regH: emp.type === 'FT' ? 168 : 0,
+          ot1: 0, ot2: 0, rest1: 0, rest2: 0,
+          holidaysWorked: [], holidayHoursPT: 0,
+          sickH: 0, personalH: 0, lateM: 0,
+          bonus: Number(emp.perfBonus) || 0,
+          extraAdd: 0, extraDeduct: 0, customNote: '',
+        };
+      }
+      const rec = App.payroll.attByMonth[mk][emp.id];
+      if (!Array.isArray(rec.holidaysWorked)) rec.holidaysWorked = [];
+      return rec;
+    }
+
+    function updatePayrollAttField(mk, empId, field, rawVal, isText) {
+      const emp = App.employees.find(e => e.id === empId);
+      if (!emp) return;
+      const rec = ensurePayrollAtt(mk, emp);
+      if (isText) {
+        rec[field] = String(rawVal || '');
+      } else {
+        rec[field] = Math.max(0, Number(rawVal) || 0);
+        if (field === 'lateM') rec.manualLateOverride = true;
+      }
+      render();
+    }
+
+    function togglePayrollHolidayWorked(mk, empId, dateStr, checked) {
+      const emp = App.employees.find(e => e.id === empId);
+      if (!emp) return;
+      const rec = ensurePayrollAtt(mk, emp);
+      const set = new Set(rec.holidaysWorked || []);
+      if (checked) set.add(dateStr); else set.delete(dateStr);
+      rec.holidaysWorked = Array.from(set);
+      render();
+    }
+
     function calcPayslip(emp, att, monthKey) {
       const mk = monthKey || App.payroll.monthKey;
       const rules = App.payroll.rules;
       const sync = getEmpAttendanceSync(emp.id, mk, att);
+      const effLateM = att.manualLateOverride ? (Number(att.lateM) || 0) : sync.effectiveLateM;
       const notes = [];
       const isF = emp.nationalityType === 'FOREIGN';
       const stMeta = FOREIGN_STATUSES.find(s => s.code === emp.foreignStatusType);
@@ -2810,8 +2862,8 @@ end $$;`;
       if (emp.type === 'FT' && (emp.attBonus || 0) > 0) {
         if ((att.personalH || 0) > 0) {
           attBonusStatus = 'LOST_LEAVE'; attBonusReason = `當月請事假 ${att.personalH}h，依工作規則取消全勤`;
-        } else if (sync.effectiveLateM > rules.lateGraceMinutes) {
-          attBonusStatus = 'LOST_LATE'; attBonusReason = `遲到累計 ${sync.effectiveLateM}m（逾寬限 ${rules.lateGraceMinutes}m），取消全勤`;
+        } else if (effLateM > rules.lateGraceMinutes) {
+          attBonusStatus = 'LOST_LATE'; attBonusReason = `遲到累計 ${effLateM}m（逾寬限 ${rules.lateGraceMinutes}m），取消全勤`;
         } else if (rules.missedPunchDisqualifiesBonus && sync.unresolvedMissCount > 0) {
           attBonusStatus = 'HOLD_MISSED'; attBonusReason = `${sync.unresolvedMissDates.join('、')} 尚有 ${sync.unresolvedMissCount} 筆漏卡未補`;
         } else {
@@ -2820,16 +2872,18 @@ end $$;`;
         }
       }
 
-      const basePay = emp.type === 'FT' ? (emp.baseSalary || 0) : Math.round(att.regH * emp.hourlyRate);
+      const basePay = emp.type === 'FT' ? (emp.baseSalary || 0) : Math.round((Number(att.regH) || 0) * emp.hourlyRate);
       const fixedAllowOnly = emp.type === 'FT' ? (emp.meal||0) + (emp.posAllow||0) + (emp.skillAllow||0) + (emp.transportAllow||0) + (emp.splitAllow||0) : 0;
       const allowTotal = fixedAllowOnly + attBonusEarned;
-      const otPay = Math.ceil(att.ot1 * ordRate * (4/3) + att.ot2 * ordRate * (5/3) + att.rest1 * ordRate * (4/3) + att.rest2 * ordRate * (5/3));
+      const otPay = Math.ceil((att.ot1||0) * ordRate * (4/3) + (att.ot2||0) * ordRate * (5/3) + (att.rest1||0) * ordRate * (4/3) + (att.rest2||0) * ordRate * (5/3));
       let holidayPay = 0;
-      const hCnt = att.holidaysWorked.length;
+      const hCnt = (att.holidaysWorked || []).length;
       if (emp.type === 'FT' && hCnt > 0) holidayPay = Math.ceil(hCnt * 8 * ordRate);
-      else if (emp.type === 'PT' && hCnt > 0) holidayPay = Math.ceil(att.holidayHoursPT * emp.hourlyRate * 2);
+      else if (emp.type === 'PT' && (Number(att.holidayHoursPT) || 0) > 0) holidayPay = Math.ceil((Number(att.holidayHoursPT) || 0) * emp.hourlyRate * 2);
 
-      const grossPay = basePay + allowTotal + (att.bonus||0) + otPay + holidayPay;
+      const bonusAndExtra = (Number(att.bonus) || 0) + (Number(att.extraAdd) || 0);
+      const extraDeduct = Number(att.extraDeduct) || 0;
+      const grossPay = basePay + allowTotal + bonusAndExtra + otPay + holidayPay;
       const laborB = emp.laborBracket || emp.bracket || 28590;
       const nhiB = emp.nhiBracket || emp.bracket || 28590;
       const companyPaysIns = Boolean(emp.companyPaysEmployeeIns);
@@ -2840,7 +2894,7 @@ end $$;`;
       const volPenAmt = pensionMandatory ? Math.round(nhiB * (emp.volPension||0)) : 0;
 
       const leaveOnlyDeduct = Math.round((att.sickH || 0) * ordRate * 0.5 + (att.personalH || 0) * ordRate);
-      const lateDeduct = Math.round((sync.effectiveLateM / 60) * ordRate);
+      const lateDeduct = Math.round((effLateM / 60) * ordRate);
       const missedHoldDeduct = (sync.unresolvedMissCount > 0 && rules.missedPunchHoldHours > 0) ? Math.round(sync.unresolvedMissCount * rules.missedPunchHoldHours * ordRate) : 0;
       const leaveDeduct = leaveOnlyDeduct + lateDeduct + missedHoldDeduct;
 
@@ -2850,15 +2904,16 @@ end $$;`;
         taxWithhold = Math.round(grossPay * rate);
         notes.push(`外籍非居住者（未滿 183 天）：預扣 ${rate*100}% 所得稅 -NT$${taxWithhold.toLocaleString()}`);
       }
-      if (lateDeduct > 0) notes.push(`遲到比例扣款（勞基法§22）：${sync.effectiveLateM}m = -NT$${lateDeduct.toLocaleString()}`);
+      if (lateDeduct > 0) notes.push(`遲到比例扣款（勞基法§22）：${effLateM}m = -NT$${lateDeduct.toLocaleString()}`);
       if (missedHoldDeduct > 0) notes.push(`漏打卡未補暫扣（${sync.unresolvedMissCount} 筆）：-NT$${missedHoldDeduct.toLocaleString()}，核准補卡後自動補發`);
+      if (att.customNote && String(att.customNote).trim()) notes.push(`人事備註：${String(att.customNote).trim()}`);
       if (notes.length === 0) notes.push('完全符合 2026 台灣最低工資、勞基法加班與勞健保規範。');
 
-      const totalDeduct = laborEmp + nhiEmp + volPenAmt + leaveDeduct + taxWithhold;
+      const totalDeduct = laborEmp + nhiEmp + volPenAmt + leaveDeduct + taxWithhold + extraDeduct;
       const netPay = Math.max(0, grossPay - totalDeduct);
       const employerPen6 = pensionMandatory ? Math.round(nhiB * 0.06) : 0;
       const employerIns = Math.round(laborB * 0.125 * 0.70) + Math.round(nhiB * 0.0517 * 0.60 * 1.56);
-      return { emp, att, sync, ordRate, basePay, fixedAllowOnly, attBonusEarned, attBonusStatus, attBonusReason, allowTotal, otPay, holidayPay, grossPay, laborB, nhiB, laborEmp, nhiEmp, volPenAmt, leaveOnlyDeduct, lateDeduct, missedHoldDeduct, leaveDeduct, taxWithhold, totalDeduct, netPay, employerPen6, employerCost: grossPay + employerPen6 + employerIns, pensionMandatory, notes };
+      return { emp, att, sync, effLateM, ordRate, basePay, fixedAllowOnly, attBonusEarned, attBonusStatus, attBonusReason, allowTotal, otPay, holidayPay, bonusAndExtra, extraDeduct, grossPay, laborB, nhiB, laborEmp, nhiEmp, volPenAmt, leaveOnlyDeduct, lateDeduct, missedHoldDeduct, leaveDeduct, taxWithhold, totalDeduct, netPay, employerPen6, employerCost: grossPay + employerPen6 + employerIns, pensionMandatory, notes };
     }
 
     // Leave & Swap
@@ -4790,8 +4845,10 @@ end $$;`;
           </div>
         `;
       }
-      const mk = App.payroll.monthKey, rules = App.payroll.rules, attMap = App.payroll.attByMonth[mk] || {};
-      const slips = App.employees.map(e => calcPayslip(e, attMap[e.id] || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 }, mk));
+      const mk = App.payroll.monthKey, rules = App.payroll.rules;
+      const monthMeta = PAYROLL_MONTHS.find(m => m.key === mk) || { key: mk, label: mk };
+      const monthHolidays = TAIWAN_HOLIDAYS_2026.filter(h => h.monthKey === mk);
+      const slips = App.employees.map(e => calcPayslip(e, ensurePayrollAtt(mk, e), mk));
       const active = slips.find(s => s.emp.id === App.payroll.selectedEmpId) || slips[0];
       const totNet = slips.reduce((a, b) => a + b.netPay, 0);
       const totHol = slips.reduce((a, b) => a + b.holidayPay, 0);
@@ -4826,6 +4883,18 @@ end $$;`;
               <button onclick="App.payroll.showBankExportBar=!App.payroll.showBankExportBar;render()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg ${App.payroll.showBankExportBar ? 'bg-[#0F766E] text-white' : 'bg-slate-900 text-white hover:bg-slate-800'} font-semibold cursor-pointer">${ICONS.download} 輸出銀行薪轉 CSV</button>
               <button onclick="App.employees.forEach(e=>App.payroll.dispatched[App.payroll.monthKey+'_'+e.id]=true);App.payroll.viewMode='LINE_LIFF';App.toast='已發送全體 LINE 電子薪資條。';render()" class="h-8 px-3.5 rounded-lg bg-[#06C755] text-white font-semibold cursor-pointer">發送全體 LINE 薪資條</button>
             </div>
+          </div>
+
+          <!-- 當月政府行事曆國定假日 / 選舉日與特殊日期提示 -->
+          <div class="no-print rounded-xl border ${monthHolidays.length > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-slate-50 border-slate-200'} px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs">
+            <span class="font-bold ${monthHolidays.length > 0 ? 'text-amber-900' : 'text-slate-600'}">📅 ${monthMeta.label} 政府行事曆特殊日期：</span>
+            ${monthHolidays.length > 0 ? monthHolidays.map(h => `
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border ${h.kind === '選舉日' ? 'border-indigo-200 text-indigo-900' : 'border-amber-200 text-amber-900'} font-semibold" title="${h.law}">
+                <span class="mono-num font-bold">${h.date.slice(5)}</span>
+                <span>${h.name}</span>
+                <span class="text-[10px] px-1.5 py-0.2 rounded ${h.kind === '選舉日' ? 'bg-indigo-50 text-indigo-700' : 'bg-amber-100 text-amber-800'}">${h.kind}</span>
+              </span>
+            `).join('') : `<span class="text-slate-500">本月無國定假日或選舉投票日（常態計薪月份）</span>`}
           </div>
 
           ${App.payroll.showRulesBar ? `
@@ -4951,13 +5020,69 @@ end $$;`;
 
             <!-- 右側薪資條預覽 -->
             <aside class="space-y-3">
-              <div class="no-print flex justify-between items-center bg-white border border-[var(--border)] rounded-xl p-2 text-xs">
+              <div class="no-print flex flex-wrap justify-between items-center gap-1.5 bg-white border border-[var(--border)] rounded-xl p-2 text-xs">
                 <div class="flex gap-1">
                   <button onclick="App.payroll.viewMode='OFFICIAL';render()" class="px-3 py-1.5 rounded-lg font-semibold cursor-pointer ${App.payroll.viewMode==='OFFICIAL'?'bg-slate-900 text-white':'text-slate-600'}">法定薪資單</button>
                   <button onclick="App.payroll.viewMode='LINE_LIFF';render()" class="px-3 py-1.5 rounded-lg font-semibold cursor-pointer ${App.payroll.viewMode==='LINE_LIFF'?'bg-[#06C755] text-white':'text-slate-600'}">LINE 電子薪資條</button>
                 </div>
-                <button onclick="startEditHr('${active.emp.id}')" class="px-2.5 py-1.5 rounded-lg border border-slate-200 font-semibold cursor-pointer">編輯人資</button>
+                <div class="flex items-center gap-1.5">
+                  <button onclick="App.payroll.editingEmpPayroll=!App.payroll.editingEmpPayroll;render()" class="px-2.5 py-1.5 rounded-lg border font-semibold cursor-pointer ${App.payroll.editingEmpPayroll ? 'bg-[#0F766E] text-white border-[#0F766E]' : 'border-teal-200 bg-teal-50 text-[#0F766E] hover:bg-teal-100'}">${App.payroll.editingEmpPayroll ? '完成編輯' : '✏️ 編輯算薪'}</button>
+                  <button onclick="startEditHr('${active.emp.id}')" class="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">編輯人資</button>
+                </div>
               </div>
+
+              ${App.payroll.editingEmpPayroll ? (() => {
+                const rec = ensurePayrollAtt(mk, active.emp);
+                return `
+                  <div class="no-print bg-white border-2 border-[#0F766E]/40 rounded-xl p-4 space-y-3 text-xs shadow-xs">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <div>
+                        <div class="font-bold text-slate-900">✏️ 人事手動編輯本月算薪（${active.emp.name} · ${monthMeta.label}）</div>
+                        <div class="text-[11px] text-slate-500">修改後即時重算薪資條、全店總表與銀行薪轉 CSV</div>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      ${active.emp.type === 'PT' ? `
+                        <div><label class="block font-semibold text-slate-600 mb-1">正常工時 (h)</label><input type="number" step="0.5" min="0" value="${rec.regH||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','regH',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num font-bold" /></div>
+                      ` : ''}
+                      <div><label class="block font-semibold text-slate-600 mb-1">平日加班前2h (×1.34)</label><input type="number" step="0.5" min="0" value="${rec.ot1||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','ot1',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">平日加班後2h (×1.67)</label><input type="number" step="0.5" min="0" value="${rec.ot2||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','ot2',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">休息日加班前2h</label><input type="number" step="0.5" min="0" value="${rec.rest1||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','rest1',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">休息日加班3-8h</label><input type="number" step="0.5" min="0" value="${rec.rest2||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','rest2',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">病假時數 (半薪)</label><input type="number" step="0.5" min="0" value="${rec.sickH||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','sickH',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">事假時數 (扣薪)</label><input type="number" step="0.5" min="0" value="${rec.personalH||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','personalH',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">遲到累計 (分鐘)</label><input type="number" min="0" value="${active.effLateM||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','lateM',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">本月績效獎金 ($)</label><input type="number" min="0" value="${rec.bonus||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','bonus',this.value)" class="w-full h-8 px-2 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">其他加發 ($)</label><input type="number" min="0" value="${rec.extraAdd||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','extraAdd',this.value)" class="w-full h-8 px-2 rounded-lg border border-teal-200 bg-teal-50/30 mono-num font-semibold" /></div>
+                      <div><label class="block font-semibold text-slate-600 mb-1">其他扣項 ($)</label><input type="number" min="0" value="${rec.extraDeduct||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','extraDeduct',this.value)" class="w-full h-8 px-2 rounded-lg border border-rose-200 bg-rose-50/30 mono-num font-semibold" /></div>
+                      ${active.emp.type === 'PT' && monthHolidays.length > 0 ? `
+                        <div><label class="block font-semibold text-amber-800 mb-1">假日雙倍工時 (h)</label><input type="number" step="0.5" min="0" value="${rec.holidayHoursPT||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','holidayHoursPT',this.value)" class="w-full h-8 px-2 rounded-lg border border-amber-300 bg-amber-50/40 mono-num font-bold" /></div>
+                      ` : ''}
+                    </div>
+                    ${active.emp.type === 'FT' && monthHolidays.length > 0 ? `
+                      <div class="pt-1 border-t border-slate-100 space-y-1.5">
+                        <div class="font-semibold text-amber-900">本月國定假日／選舉日出勤勾選（正職勾選即加發 1 日雙倍工資）：</div>
+                        <div class="flex flex-wrap gap-2">
+                          ${monthHolidays.map(h => {
+                            const checked = (rec.holidaysWorked || []).includes(h.date);
+                            return `
+                              <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border cursor-pointer ${checked ? 'bg-amber-50 border-amber-300 text-amber-900 font-bold' : 'bg-slate-50 border-slate-200 text-slate-700'}">
+                                <input type="checkbox" ${checked ? 'checked' : ''} onchange="togglePayrollHolidayWorked('${mk}','${active.emp.id}','${h.date}',this.checked)" />
+                                <span class="mono-num">${h.date.slice(5)}</span>
+                                <span>${h.name}</span>
+                              </label>
+                            `;
+                          }).join('')}
+                        </div>
+                      </div>
+                    ` : ''}
+                    <div>
+                      <label class="block font-semibold text-slate-600 mb-1">人事算薪備註（顯示於薪資單）</label>
+                      <input value="${rec.customNote||''}" placeholder="例：補發上月加班費、代扣制服費等" onchange="updatePayrollAttField('${mk}','${active.emp.id}','customNote',this.value,true)" class="w-full h-8 px-2.5 rounded-lg border border-slate-200" />
+                    </div>
+                  </div>
+                `;
+              })() : ''}
 
               ${App.payroll.viewMode === 'OFFICIAL' ? `
                 <div class="print-payslip bg-white border border-[var(--border)] rounded-xl p-5 space-y-3 text-xs">
@@ -4965,7 +5090,7 @@ end $$;`;
                     <div>
                       <div class="text-[11px] font-semibold text-[#0F766E]">SHIFTCRAFT PAYSLIP · 勞基法第 23 條</div>
                       <h3 class="text-base font-bold text-slate-900 mt-0.5">${App.storeSettings.name}</h3>
-                      <div class="text-slate-500">${active.emp.name}（${active.emp.code}）</div>
+                      <div class="text-slate-500">${active.emp.name}（${active.emp.code||''}）</div>
                     </div>
                     <div class="text-right mono-num"><div class="font-bold text-slate-900">${mk}</div><div class="text-[#0F766E] font-semibold">特休餘額 ${active.emp.annualLeaveH}h</div></div>
                   </div>
@@ -4976,14 +5101,16 @@ end $$;`;
                       <div class="flex justify-between"><span>固定津貼</span><span>$${active.fixedAllowOnly.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>全勤獎金</span><span>$${active.attBonusEarned.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>加班與假日</span><span>$${(active.otPay+active.holidayPay).toLocaleString()}</span></div>
+                      ${active.bonusAndExtra > 0 ? `<div class="flex justify-between"><span>獎金與其他加發</span><span>$${active.bonusAndExtra.toLocaleString()}</span></div>` : ''}
                     </div>
                     <div class="p-3 rounded-lg bg-slate-50 space-y-1.5">
                       <div class="font-bold text-rose-700 border-b border-slate-200 pb-1">應扣 (-$${active.totalDeduct.toLocaleString()})</div>
                       <div class="flex justify-between"><span>勞保自付 (級距$${(active.laborB||0).toLocaleString()})</span><span>-$${active.laborEmp.toLocaleString()}</span></div>
-                          <div class="flex justify-between"><span>健保自付 (級距$${(active.nhiB||0).toLocaleString()})</span><span>-$${active.nhiEmp.toLocaleString()}</span></div>
+                      <div class="flex justify-between"><span>健保自付 (級距$${(active.nhiB||0).toLocaleString()})</span><span>-$${active.nhiEmp.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>遲到扣款</span><span>-$${active.lateDeduct.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>漏卡暫扣</span><span>-$${active.missedHoldDeduct.toLocaleString()}</span></div>
                       <div class="flex justify-between"><span>請假/稅款</span><span>-$${(active.leaveOnlyDeduct+active.taxWithhold).toLocaleString()}</span></div>
+                      ${active.extraDeduct > 0 ? `<div class="flex justify-between"><span>其他扣項</span><span>-$${active.extraDeduct.toLocaleString()}</span></div>` : ''}
                     </div>
                   </div>
                   <div class="rounded-lg bg-teal-50 border border-teal-200 p-3 flex justify-between items-center">
