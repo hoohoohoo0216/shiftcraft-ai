@@ -2890,6 +2890,14 @@ end $$;`;
           const isStoreClosed = getEffectiveDayConfig(h.date).isClosed;
           const sh = (App.sched.shifts || []).find(s => s.employeeId === emp.id && s.date === h.date);
           const workedHours = isStoreClosed ? 0 : getShiftNetHours(sh);
+          if (h.kind === '選舉日' && emp.nationalityType === 'FOREIGN') {
+            return {
+              holiday: h,
+              status: 'NO_VOTE_RIGHT',
+              hours: workedHours,
+              label: workedHours > 0 ? '外籍無投票權・正常計薪' : '外籍無投票權',
+            };
+          }
           if (workedHours > 0) {
             return {
               holiday: h,
@@ -3018,10 +3026,85 @@ end $$;`;
     }
 
     // Leave & Swap
+    function calcStatutoryAnnualLeaveInfo(hireDate) {
+      if (!hireDate) return { days: 0, hours: 0, tenureLabel: '未填到職日' };
+      const parts = String(hireDate).split('-').map(Number);
+      if (parts.length !== 3 || parts.some(isNaN)) return { days: 0, hours: 0, tenureLabel: '到職日格式待確認' };
+      const start = new Date(parts[0], parts[1] - 1, parts[2]);
+      const now = new Date();
+      let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+      if (now.getDate() < start.getDate()) months -= 1;
+      if (months < 6) return { days: 0, hours: 0, tenureLabel: '未滿半年' };
+      if (months < 12) return { days: 3, hours: 24, tenureLabel: '滿半年' };
+      const years = Math.floor(months / 12);
+      if (years < 2) return { days: 7, hours: 56, tenureLabel: '滿 1 年' };
+      if (years < 3) return { days: 10, hours: 80, tenureLabel: '滿 2 年' };
+      if (years < 5) return { days: 14, hours: 112, tenureLabel: `滿 ${years} 年` };
+      if (years < 10) return { days: 15, hours: 120, tenureLabel: `滿 ${years} 年` };
+      const days = Math.min(30, 15 + (years - 9));
+      return { days, hours: days * 8, tenureLabel: `滿 ${years} 年` };
+    }
+
+    function getEffectiveAnnualLeaveInfo(emp) {
+      const stat = calcStatutoryAnnualLeaveInfo(emp && emp.hireDate);
+      const storeExtra = Math.max(0, Number(App.storeSettings && App.storeSettings.annualLeaveExtraDays) || 0);
+      const hasCustom = emp && emp.customAnnualLeaveDays != null && emp.customAnnualLeaveDays !== '';
+      const rawDays = hasCustom ? Number(emp.customAnnualLeaveDays) : (stat.days + storeExtra);
+      const finalDays = Math.max(stat.days, isNaN(rawDays) ? stat.days : rawDays);
+      return {
+        statutoryDays: stat.days,
+        tenureLabel: stat.tenureLabel,
+        days: finalDays,
+        hours: finalDays * 8,
+        isCustom: hasCustom,
+      };
+    }
+
+    function updateEmpCustomAnnualDays(empId, rawVal) {
+      const emp = App.employees.find(e => e.id === empId);
+      if (!emp) return;
+      const stat = calcStatutoryAnnualLeaveInfo(emp.hireDate);
+      const trimmed = String(rawVal == null ? '' : rawVal).trim();
+      if (trimmed === '') {
+        delete emp.customAnnualLeaveDays;
+      } else {
+        let val = Number(trimmed);
+        if (isNaN(val) || val < stat.days) {
+          val = stat.days;
+          App.toast = `⚠️ 依勞基法第 38 條，${emp.name}（${stat.tenureLabel}）法定特休最低為 ${stat.days} 天，不可低於法定標準！`;
+        }
+        emp.customAnnualLeaveDays = val;
+      }
+      const eff = getEffectiveAnnualLeaveInfo(emp);
+      emp.annualLeaveH = eff.hours;
+      if (App.liff.balances[empId]) App.liff.balances[empId].annualTotal = eff.hours;
+      render();
+    }
+
+    function updateEmpCompOffHours(empId, rawVal) {
+      const bal = ensureLeaveBalance(empId);
+      bal.compOffRemain = Math.max(0, Number(rawVal) || 0);
+      render();
+    }
+
     function ensureLeaveBalance(empId) {
+      const emp = App.employees.find(e => e.id === empId) || { type: 'PT', hireDate: '' };
+      const eff = getEffectiveAnnualLeaveInfo(emp);
       if (!App.liff.balances[empId]) {
-        const emp = App.employees.find(e => e.id === empId) || { type: 'PT', annualLeaveH: 16 };
-        App.liff.balances[empId] = { annualTotal: (emp.annualLeaveH || 16) + 8, annualUsed: 8, sickTotal: 240, sickUsed: 0, personalTotal: 112, personalUsed: 0, compOffRemain: emp.type === 'FT' ? 8 : 0, menstrualUsedMonth: 0 };
+        App.liff.balances[empId] = {
+          annualTotal: eff.hours,
+          annualUsed: 0,
+          sickTotal: 240,
+          sickUsed: 0,
+          personalTotal: 112,
+          personalUsed: 0,
+          familyCareTotal: 56,
+          familyCareUsed: 0,
+          compOffRemain: 0,
+          menstrualUsedMonth: 0,
+        };
+      } else {
+        App.liff.balances[empId].annualTotal = eff.hours;
       }
       return App.liff.balances[empId];
     }
@@ -5573,28 +5656,108 @@ end $$;`;
           </div>
 
           <!-- 全店夥伴假別餘額總表 -->
-          <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
-            <div class="px-4 py-3 border-b border-[var(--border)] flex justify-between items-center"><h3 class="text-sm font-bold text-slate-900">全店夥伴年度假別餘額總表</h3></div>
-            <div class="overflow-x-auto">
-              <table class="w-full border-collapse text-left min-w-[760px] text-xs">
-                <thead><tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500"><th class="p-3">員工</th><th class="p-3">特休年假 (剩餘 / 總額)</th><th class="p-3">普通病假 (已休/30日)</th><th class="p-3">事假 (已休/14日)</th><th class="p-3">家庭照顧假 (7日)</th><th class="p-3">生理假 (月)</th><th class="p-3">加班補休</th></tr></thead>
-                <tbody>
-                  ${App.employees.map(e => {
-                    const b = ensureLeaveBalance(e.id), remAnn = Math.max(0, b.annualTotal - b.annualUsed);
-                    return `
-                      <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
-                        <td class="p-3 font-bold text-slate-900">${e.name} <span class="text-[11px] font-normal text-slate-500">(${e.type})</span></td>
-                        <td class="p-3 mono-num font-bold text-[#0F766E]">${remAnn}h <span class="text-slate-400 font-normal">/ ${b.annualTotal}h</span></td>
-                        <td class="p-3 mono-num">${b.sickUsed}h / 240h</td>
-                        <td class="p-3 mono-num ${b.personalUsed>0?'text-rose-600 font-semibold':''}">${b.personalUsed}h / 112h</td>
-                        <td class="p-3 mono-num">${b.familyCareUsed||0}h / 56h</td>
-                        <td class="p-3 mono-num text-slate-500">${e.gender==='女' ? `剩 ${Math.max(0, 1 - (b.menstrualUsedMonth||0))} 日` : '—'}</td>
-                        <td class="p-3 mono-num font-semibold text-indigo-700">${b.compOffRemain}h</td>
+          <div class="bg-white border border-[var(--border)] rounded-xl overflow-visible">
+            <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap justify-between items-center gap-2 text-xs">
+              <div>
+                <h3 class="text-sm font-bold text-slate-900">全店夥伴年度假別餘額總表</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">特休依各員工「到職日」按勞基法§38自動起算（滿半年 3 日、滿 1 年 7 日…），滑鼠移至各假別 ⓘ 可檢視法定給薪規定</p>
+              </div>
+              <label class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-teal-50/70 border border-teal-200 text-teal-900 font-semibold">
+                <span>本店特休優於勞基法加給：＋</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="30"
+                  value="${Number(App.storeSettings.annualLeaveExtraDays) || 0}"
+                  onfocus="this.select()"
+                  onchange="App.storeSettings.annualLeaveExtraDays=Math.max(0,Number(this.value)||0);App.toast='已更新本店特休加給日數（最低仍受勞基法保障）。';render()"
+                  class="w-12 h-6 px-1.5 rounded border border-teal-300 bg-white text-center mono-num font-bold"
+                />
+                <span>日</span>
+              </label>
+            </div>
+            <div class="overflow-x-auto overflow-y-visible">
+              ${(() => {
+                const infoTip = (label, title, body, alignRight) => `
+                  <span class="inline-flex items-center gap-1 group relative cursor-help">
+                    <span>${label}</span>
+                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-200/80 text-slate-600 text-[10px] font-bold group-hover:bg-[#0F766E] group-hover:text-white transition">i</span>
+                    <span class="pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-150 absolute top-full ${alignRight ? 'right-0' : 'left-0'} mt-1.5 z-40 w-64 p-3 rounded-xl bg-slate-900 text-white text-[11px] font-normal leading-relaxed shadow-xl whitespace-normal text-left">
+                      <strong class="block text-teal-300 mb-1">${title}</strong>
+                      ${body}
+                    </span>
+                  </span>
+                `;
+                return `
+                  <table class="w-full border-collapse text-left min-w-[820px] text-xs">
+                    <thead>
+                      <tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500">
+                        <th class="p-3">員工 / 年資</th>
+                        <th class="p-3">${infoTip('特休年假 (剩餘 / 總額)', '勞基法第 38 條（全薪）', '到職滿半年 3 日、滿 1 年 7 日、2 年 10 日、3 年 14 日、5 年 15 日、10 年起每年 +1 日（上限 30 日）。<br/>給薪：<strong>全薪給付</strong>，年度終結未休畢須折發工資。各店可自訂優於勞基法之天數。', false)}</th>
+                        <th class="p-3">${infoTip('普通病假 (已休/30日)', '勞工請假規則第 4 條（半薪）', '未住院 1 年內合計不得超過 30 日（240h）。<br/>給薪：<strong>30 日內折半發給工資（半薪）</strong>。', false)}</th>
+                        <th class="p-3">${infoTip('事假 (已休/14日)', '勞工請假規則第 7 條（不支薪）', '因有事故必須親自處理者，1 年內合計不得超過 14 日（112h）。<br/>給薪：<strong>事假期間不給工資</strong>。', false)}</th>
+                        <th class="p-3">${infoTip('家庭照顧假 (7日)', '性別平等工作法第 20 條（不支薪）', '家庭成員預防接種、發生嚴重疾病或重大事故須親自照顧時，全年以 7 日（56h）為限，併入事假計算。<br/>給薪：<strong>不給工資，但不得影響全勤獎金</strong>。', true)}</th>
+                        <th class="p-3">${infoTip('生理假 (月)', '性別平等工作法第 14 條（半薪）', '女性受僱者每月得請生理假 1 日；全年請假日數未逾 3 日不併入病假計算。<br/>給薪：<strong>折半發給工資（半薪），不得影響全勤獎金</strong>。', true)}</th>
+                        <th class="p-3">${infoTip('加班補休 (h)', '勞基法第 32-1 條（全薪）', '員工加班後「經勞工同意」選擇換取補休，依加班時數 1:1 換算。<br/>給薪：<strong>補休期間工資照給</strong>；屆期未休畢須依原加班費率折發工資。人資可直接於下方欄位維護時數。', true)}</th>
                       </tr>
-                    `;
-                  }).join('')}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody>
+                      ${getActiveEmployees().map(e => {
+                        const b = ensureLeaveBalance(e.id);
+                        const eff = getEffectiveAnnualLeaveInfo(e);
+                        const remAnn = Math.max(0, b.annualTotal - b.annualUsed);
+                        return `
+                          <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
+                            <td class="p-3">
+                              <div class="font-bold text-slate-900">${e.name} <span class="text-[11px] font-normal text-slate-500">(${e.type})</span></div>
+                              <div class="text-[10px] text-slate-500 mono-num">${e.hireDate ? `到職 ${e.hireDate} · ${eff.tenureLabel}` : '未填到職日'}</div>
+                            </td>
+                            <td class="p-3">
+                              <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="mono-num font-bold text-[#0F766E]">${remAnn}h <span class="text-slate-400 font-normal">/ ${b.annualTotal}h (${eff.days}日)</span></span>
+                                <label class="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                                  <span>調</span>
+                                  <input
+                                    type="number"
+                                    min="${eff.statutoryDays}"
+                                    max="60"
+                                    value="${eff.days}"
+                                    onfocus="this.select()"
+                                    onchange="updateEmpCustomAnnualDays('${e.id}', this.value)"
+                                    title="自訂年度特休天數（法定最低 ${eff.statutoryDays} 日）"
+                                    class="w-11 h-6 px-1 rounded border border-slate-200 bg-white text-center mono-num font-semibold text-slate-700"
+                                  />
+                                  <span>日</span>
+                                </label>
+                              </div>
+                              <div class="text-[10px] text-slate-400 mt-0.5">法定最低 ${eff.statutoryDays} 日${eff.isCustom ? ' · 已自訂' : ''}</div>
+                            </td>
+                            <td class="p-3 mono-num">${b.sickUsed}h / 240h</td>
+                            <td class="p-3 mono-num ${b.personalUsed>0?'text-rose-600 font-semibold':''}">${b.personalUsed}h / 112h</td>
+                            <td class="p-3 mono-num">${b.familyCareUsed||0}h / 56h</td>
+                            <td class="p-3 mono-num text-slate-500">${e.gender==='女' ? `剩 ${Math.max(0, 1 - (b.menstrualUsedMonth||0))} 日` : '—'}</td>
+                            <td class="p-3">
+                              <div class="inline-flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  min="0"
+                                  value="${b.compOffRemain || 0}"
+                                  onfocus="this.select()"
+                                  onchange="updateEmpCompOffHours('${e.id}', this.value)"
+                                  title="人資可直接輸入或調整此員工的加班補休餘額（小時）"
+                                  class="w-14 h-7 px-1.5 rounded border border-indigo-200 bg-indigo-50/40 text-center mono-num font-bold text-indigo-700"
+                                />
+                                <span class="text-indigo-700 font-semibold">h</span>
+                              </div>
+                            </td>
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                `;
+              })()}
             </div>
           </div>
         </div>
