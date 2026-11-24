@@ -257,7 +257,7 @@
         passportNumber: '', passportExpiryDate: '', arcExpiryDate: '', workPermitNumber: '', workPermitExpiryDate: '',
         isTaxResident183Days: true, emergencyName: '', emergencyPhone: '',
         roleTitle: isF ? '外籍僑外生 PT・外場/內場' : '正職夥伴',
-        type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), employmentStatus: 'ACTIVE', resignDate: '', healthCertDate: '',
+        type: empType, flexHoursType: 'STANDARD', hireDate: new Date().toISOString().slice(0, 10), employmentStatus: 'ACTIVE', resignDate: '', isBackOfficeFixed: false, healthCertDate: '',
         stations: [], canKey: !isF,
         baseSalary: isF ? 0 : 32000, hourlyRate: 205, meal: 0, posAllow: 0,
         skillAllow: 0, transportAllow: 0, splitAllow: 0, attBonus: 0, perfBonus: 0,
@@ -279,6 +279,33 @@
       } catch (e) {
         return [];
       }
+    }
+
+    function getSchedulableEmployees() {
+      return getActiveEmployees().filter(e => !e.isBackOfficeFixed);
+    }
+
+    function getWeeklyFixedOverheadCost() {
+      let staffWeekly = 0;
+      let staffCount = 0;
+      try {
+        getActiveEmployees().forEach(e => {
+          if (!e.isBackOfficeFixed) return;
+          staffCount++;
+          const monthly = e.type === 'FT'
+            ? ((Number(e.baseSalary) || 0) + (Number(e.meal) || 0) + (Number(e.posAllow) || 0) + (Number(e.skillAllow) || 0) + (Number(e.transportAllow) || 0) + (Number(e.splitAllow) || 0) + (Number(e.attBonus) || 0) + (Number(e.perfBonus) || 0))
+            : ((Number(e.hourlyRate) || 0) * 160);
+          staffWeekly += monthly / 4.33;
+        });
+      } catch (e) {}
+      let extraMonthly = 0;
+      try {
+        extraMonthly = Math.max(0, Number(App.storeSettings && App.storeSettings.monthlyFixedOverhead) || 0);
+      } catch (e) {}
+      const extraWeekly = extraMonthly / 4.33;
+      const sW = Math.round(staffWeekly);
+      const eW = Math.round(extraWeekly);
+      return { staffCount, staffWeekly: sW, extraMonthly, extraWeekly: eW, totalWeekly: sW + eW };
     }
 
     function getLineEmployeeAdminRole(emp) {
@@ -572,6 +599,7 @@
         name: '山焙森茶・中山南西概念店', code: '', taxId: '90482715',
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
         scheduleStartHour: 8, scheduleEndHour: 23,
+        monthlyFixedOverhead: 0,
         peakHours: [], peakDraft: { label: '', start: '11:30', end: '14:00' },
         laborInsuranceUnit: '01094827K', nhiInsuranceUnit: '010194827',
         weeklyClosedDays: [],
@@ -959,6 +987,7 @@
       App.storeSettings.wifiBssid = '';
       App.storeSettings.specialClosedDates = [];
       App.storeSettings.peakHours = [];
+      App.storeSettings.monthlyFixedOverhead = 0;
       App.storeSettings.workstations = [];
       if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       App.storeSettings.admins = [
@@ -2069,9 +2098,9 @@ end $$;`;
     function evalSchedule() {
       const issues = [];
       const summaries = {};
-      let totalHours = 0, totalCost = 0, otCost = 0;
+      let totalHours = 0, shiftCost = 0, otCost = 0;
 
-      for (const emp of App.employees) {
+      for (const emp of getSchedulableEmployees()) {
         const weekDays = getVisibleWeekDays();
         const empShifts = weekDays.map(f =>
           App.sched.shifts.find(s => s.employeeId === emp.id && s.date === f.date) ||
@@ -2123,12 +2152,15 @@ end $$;`;
         const otH = Math.max(0, h - 40);
         const empOtPay = Math.round(otH * emp.hourlyRate * 1.34);
         const pay = Math.round(Math.min(40, h) * emp.hourlyRate) + empOtPay;
-        totalHours += h; totalCost += pay; otCost += empOtPay;
+        totalHours += h; shiftCost += pay; otCost += empOtPay;
         summaries[emp.id] = { hours: h, days, pay, hasErr };
       }
+      const overhead = getWeeklyFixedOverheadCost();
+      const overheadCost = overhead.totalWeekly;
+      const totalCost = shiftCost + overheadCost;
       const manualRev = Number(App.sched && App.sched.weeklyRevenue) || 0;
       const totalRev = manualRev > 0 ? manualRev : (App.auth && App.auth.isDemo ? FORECASTS.reduce((a, b) => a + b.revenue, 0) : 0);
-      return { issues, summaries, totalHours, totalCost, otCost, totalRev, ratio: totalRev > 0 ? ((totalCost / totalRev) * 100).toFixed(1) : null };
+      return { issues, summaries, totalHours, shiftCost, overheadCost, overhead, totalCost, otCost, totalRev, ratio: totalRev > 0 ? ((totalCost / totalRev) * 100).toFixed(1) : null };
     }
 
     const WEEKDAY_LABELS_ZH = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
@@ -2301,7 +2333,10 @@ end $$;`;
             ? 'bg-rose-50 border-rose-200 text-rose-700'
             : (r > 30 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-emerald-50 border-emerald-200 text-emerald-700');
           badge.className = `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold mono-num ${colorCls}`;
-          badge.innerHTML = `<span>本週人力佔營收比</span><strong>${ev.ratio}%</strong><span class="text-[11px] opacity-80">(人力 NT$${ev.totalCost.toLocaleString()})</span>`;
+          const costNote = ev.overheadCost > 0
+            ? `(現場 NT$${ev.shiftCost.toLocaleString()} ＋ 後勤攤提 NT$${ev.overheadCost.toLocaleString()})`
+            : `(人力 NT$${ev.totalCost.toLocaleString()})`;
+          badge.innerHTML = `<span>本週人力佔營收比</span><strong>${ev.ratio}%</strong><span class="text-[11px] opacity-80">${costNote}</span>`;
         } else {
           badge.className = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-slate-50 text-slate-500 text-xs font-medium';
           badge.innerHTML = '<span>本週人力佔營收比</span><strong class="mono-num">—</strong>';
@@ -3803,7 +3838,7 @@ end $$;`;
       const selForecast = weekDays.find(f => f.date === selDate) || weekDays[0];
       const dayCfg = getEffectiveDayConfig(selDate);
 
-      const activeEmps = getActiveEmployees();
+      const activeEmps = getSchedulableEmployees();
       const dayStats = {};
       weekDays.forEach(f => {
         const isClosed = getEffectiveDayConfig(f.date).isClosed;
@@ -3903,10 +3938,10 @@ end $$;`;
                       class="w-24 bg-transparent text-slate-900 font-bold mono-num focus:outline-none placeholder:font-normal placeholder:text-slate-400"
                     />
                   </label>
-                  <div id="weekly-labor-ratio-badge" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs mono-num ${ratioCls}" title="本週排班預估薪資成本 ÷ 預估週營收">
+                  <div id="weekly-labor-ratio-badge" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs mono-num ${ratioCls}" title="（本週現場排班預估薪資 ＋ 固定後勤週攤提）÷ 預估週營收">
                     <span>本週人力佔營收比</span>
                     <strong>${ev.ratio !== null ? `${ev.ratio}%` : '—'}</strong>
-                    ${ev.ratio !== null ? `<span class="text-[11px] opacity-80">(人力 NT$${ev.totalCost.toLocaleString()})</span>` : ''}
+                    ${ev.ratio !== null ? `<span class="text-[11px] opacity-80">${ev.overheadCost > 0 ? `(現場 NT$${ev.shiftCost.toLocaleString()} ＋ 後勤攤提 NT$${ev.overheadCost.toLocaleString()})` : `(人力 NT$${ev.totalCost.toLocaleString()})`}</span>` : ''}
                   </div>
                 `;
               })() : ''}
@@ -4003,7 +4038,7 @@ end $$;`;
                   </span>
                 </div>
                 <div class="flex items-center gap-2.5 flex-wrap text-xs">
-                  <button onclick="const _ae=getActiveEmployees();if(!_ae.length){App.toast='請先至「人事建檔」新增在職員工，再開始排班。';App.mainTab='HR';render();}else{App.sched.editingShiftModal={empId:_ae[0].id,date:'${selDate}',isNew:true};render();}" class="h-7 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-bold cursor-pointer shadow-xs">
+                  <button onclick="const _ae=getSchedulableEmployees();if(!_ae.length){App.toast='請先至「人事建檔」新增現場排班員工，再開始排班。';App.mainTab='HR';render();}else{App.sched.editingShiftModal={empId:_ae[0].id,date:'${selDate}',isNew:true};render();}" class="h-7 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white text-xs font-bold cursor-pointer shadow-xs">
                     ＋ 新增排班
                   </button>
                   <button onclick="App.mainTab='SETTINGS';App.storeSettings.subTab='BASIC';render()" class="h-7 px-2.5 rounded-lg bg-teal-50 border border-teal-200 text-[#0F766E] hover:bg-teal-100/70 text-[11px] font-semibold mono-num cursor-pointer" title="前往店鋪基本資料調整可排班時間">
@@ -4421,7 +4456,17 @@ end $$;`;
                         設為「已離職」並儲存後，系統會<strong>自動解除該員工的 LINE 綁定、停用管理權限，並不再生產於排班表</strong>；歷史人資與薪資紀錄仍會保留供日後查核。
                       </div>
                       <div class="col-span-2"><label class="block font-semibold text-slate-600 mb-1">供膳體檢日</label><input type="date" value="${f.healthCertDate||''}" oninput="App.hr.form.healthCertDate=this.value" class="w-full h-9 px-2.5 rounded-lg border border-slate-200 mono-num" /></div>
-                    ` : ''}
+                    ` : `
+                      <div class="col-span-2">
+                        <label class="flex items-start gap-2 p-2.5 rounded-lg border ${f.isBackOfficeFixed ? 'border-indigo-300 bg-indigo-50/70' : 'border-slate-200 bg-slate-50/70'} cursor-pointer">
+                          <input type="checkbox" ${f.isBackOfficeFixed ? 'checked' : ''} onchange="App.hr.form.isBackOfficeFixed=this.checked;render()" class="mt-0.5 rounded border-slate-300" />
+                          <span class="text-[11px] leading-relaxed text-slate-700">
+                            <strong class="text-slate-900">不參與現場排班（人資／總務／行政等固定後勤）</strong><br/>
+                            勾選後不會出現在店長的排班表，系統會自動將此員工月薪 ÷ 4.33 週，攤提計入排班頁「本週人力佔營收比」。
+                          </span>
+                        </label>
+                      </div>
+                    `}
                     ${App.hr.editingId && f.lineUserId ? `
                       <div class="col-span-2 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
                         <span class="text-emerald-900 font-semibold">🟢 已綁定 LINE 帳號${f.lineDisplayName ? `（${f.lineDisplayName}）` : ''}</span>
@@ -4568,6 +4613,7 @@ end $$;`;
                           <div class="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
                             <span>${e.name}</span>
                             ${resigned ? `<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px] font-bold">已離職</span>` : ''}
+                            ${!resigned && e.isBackOfficeFixed ? `<span class="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-bold">後勤不排班</span>` : ''}
                             <span class="text-[11px] font-normal text-slate-500">${e.nationality}</span>
                           </div>
                           <div class="text-[11px] text-slate-500 mono-num">${e.code} · ${e.phone||''}</div>
@@ -5256,6 +5302,40 @@ end $$;`;
                 <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">門市地址</label><input value="${st.address}" oninput="App.storeSettings.address=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
                 <div><label class="block font-semibold text-slate-600 mb-1">聯絡電話</label><input value="${st.phone}" oninput="App.storeSettings.phone=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" /></div>
               </div>
+              ${(() => {
+                const ov = getWeeklyFixedOverheadCost();
+                return `
+                  <div class="p-4 rounded-xl bg-indigo-50/50 border border-indigo-200/80 space-y-2.5">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-slate-900">固定後勤人力分攤（計入排班頁「本週人力佔營收比」）</div>
+                        <div class="text-[11px] text-slate-600 mt-0.5">若人資、總務、會計由多間門市共用（或有外包／總部分攤人事費），可在此填入本店每月分攤金額；系統會自動與「人事建檔」中勾選「後勤不排班」的員工月薪合併，按週（÷ 4.33）計入人力佔營收比。</div>
+                      </div>
+                      <span class="px-2.5 py-1 rounded-full bg-white border border-indigo-200 text-indigo-700 font-bold mono-num text-[11px]">目前每週後勤攤提：NT$${ov.totalWeekly.toLocaleString()}</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3">
+                      <label class="flex items-center gap-2 font-semibold text-slate-700">
+                        <span>每月額外固定後勤分攤（選填）：NT$</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1000"
+                          value="${Number(st.monthlyFixedOverhead) || ''}"
+                          placeholder="0"
+                          onfocus="this.select()"
+                          oninput="App.storeSettings.monthlyFixedOverhead=Math.max(0,Number(this.value)||0)"
+                          onblur="render()"
+                          class="w-32 h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-bold"
+                        />
+                        <span class="text-[11px] text-slate-500 font-normal">/ 月</span>
+                      </label>
+                      <span class="text-[11px] text-slate-500 mono-num">
+                        （單店後勤員工 ${ov.staffCount} 人：NT$${ov.staffWeekly.toLocaleString()}/週 ＋ 額外分攤：NT$${ov.extraWeekly.toLocaleString()}/週）
+                      </span>
+                    </div>
+                  </div>
+                `;
+              })()}
               ${(() => {
                 const ax = getStoreScheduleAxis();
                 const startOpts = Array.from({ length: 24 }, (_, h) => h);
