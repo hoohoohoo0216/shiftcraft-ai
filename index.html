@@ -2255,7 +2255,7 @@ end $$;`;
       }
       App.auth.weakPasswordWarning = false;
       App.auth.pwdDraft = { current: '', next: '', confirm: '' };
-      App.toast = '✅ 已升級為高強度加密密碼（PBKDF2 10 萬次加鹽雜湊），下次登入請使用新密碼。';
+      App.toast = '✅ 登入密碼已更新完成，下次登入請使用新密碼。';
       render();
     }
 
@@ -7063,7 +7063,7 @@ end $$;`;
                   ${a.authBusy ? '連線處理中…' : (isReg ? '立即開通 14 天免費試用' : '登入營運管理後台')}
                 </button>
                 <div class="text-[10px] text-slate-400 text-center">
-                  🔒 PBKDF2 10 萬次加鹽加密 · 輸錯 5 次自動鎖定 15 分鐘 · 閒置自動登出保護
+                  🔒 採用企業級加密保護與異常登入防護，守護門市營運與員工個資安全
                 </div>
               </form>
 
@@ -7172,7 +7172,7 @@ end $$;`;
               <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-100 pb-3">
                   <h3 class="text-sm font-bold text-slate-900">變更登入密碼與帳號安全</h3>
-                  <span class="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold">PBKDF2 10 萬次加密</span>
+                  <span class="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold">高強度加密保護中</span>
                 </div>
                 ${a.weakPasswordWarning ? `
                   <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 font-semibold leading-relaxed">
