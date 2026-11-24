@@ -106,6 +106,8 @@
       OVERNIGHT: { code: 'OVERNIGHT', name: '大夜班 (跨夜營業 / 清潔)', shortLabel: '跨夜 N', timeRange: '22:00-06:00 (+1)', startHour: 22.0, endHour: 30.0, netHours: 7.5, isOff: false, isOvernight: true },
       OFF_REG: { code: 'OFF_REG', name: '例假日 (勞基法必休)', shortLabel: '例假', timeRange: '全天休假', startHour: 0, endHour: 0, netHours: 0, isOff: true },
       OFF_REST: { code: 'OFF_REST', name: '休息日 / PT劃休', shortLabel: '休假', timeRange: '排休 / 劃休', startHour: 0, endHour: 0, netHours: 0, isOff: true },
+      OFF_HOLIDAY: { code: 'OFF_HOLIDAY', name: '國定假日放假 (勞基法§37)', shortLabel: '國定休', timeRange: '全天放假', startHour: 0, endHour: 0, netHours: 0, isOff: true },
+      OFF_HOLIDAY_COMP: { code: 'OFF_HOLIDAY_COMP', name: '國定假日補休 (撞例/休補假)', shortLabel: '國假補休', timeRange: '補休一日', startHour: 0, endHour: 0, netHours: 0, isOff: true },
     };
 
     const FORECASTS = [
@@ -2875,6 +2877,77 @@ end $$;`;
       render();
     }
 
+    function evalMonthlyHolidayCompliance(monthKey) {
+      const mk = monthKey || App.payroll.monthKey;
+      // 僅針對真正法定國定假日與選舉日逐人判定（不含僅適用於週六日休假制之政府補假）
+      const statutoryDays = TAIWAN_HOLIDAYS_2026.filter(h => h.monthKey === mk && h.kind !== '補假');
+      const activeList = getActiveEmployees();
+      const rows = activeList.map(emp => {
+        const compTakenDates = (App.sched.shifts || [])
+          .filter(s => s.employeeId === emp.id && s.date && s.date.startsWith(mk) && s.shiftCode === 'OFF_HOLIDAY_COMP')
+          .map(s => s.date);
+        const dayResults = statutoryDays.map(h => {
+          const isStoreClosed = getEffectiveDayConfig(h.date).isClosed;
+          const sh = (App.sched.shifts || []).find(s => s.employeeId === emp.id && s.date === h.date);
+          const workedHours = isStoreClosed ? 0 : getShiftNetHours(sh);
+          if (workedHours > 0) {
+            return {
+              holiday: h,
+              status: 'DOUBLE_PAY',
+              hours: workedHours,
+              label: emp.type === 'FT' ? '雙倍薪 (+1日)' : `雙倍時薪 (${workedHours}h)`,
+            };
+          }
+          if (emp.type === 'PT') {
+            return { holiday: h, status: 'PT_OFF', hours: 0, label: isStoreClosed ? '店休未出勤' : '未排班' };
+          }
+          // 正職 FT 當日未出勤：區分「國定假日放假」vs「撞門市公休／例假／休息日須補假」
+          if (sh && sh.shiftCode === 'OFF_HOLIDAY') {
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '國定假日放假' };
+          }
+          if (sh && sh.shiftCode === 'OFF_HOLIDAY_COMP') {
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '國假補休' };
+          }
+          const reason = isStoreClosed ? '撞門市公休' : (sh && sh.shiftCode === 'OFF_REG' ? '撞例假日' : '撞休息日');
+          return { holiday: h, status: 'NEED_COMP', hours: 0, reason, label: `${reason}・須補假` };
+        });
+        const doublePayDates = dayResults.filter(r => r.status === 'DOUBLE_PAY').map(r => r.holiday.date);
+        const doublePayHoursPT = dayResults.filter(r => r.status === 'DOUBLE_PAY').reduce((acc, r) => acc + (r.hours || 0), 0);
+        const needCompDates = dayResults.filter(r => r.status === 'NEED_COMP').map(r => r.holiday.date);
+        const compTakenCount = compTakenDates.length;
+        const compUnresolvedCount = Math.max(0, needCompDates.length - compTakenCount);
+        return { emp, dayResults, doublePayDates, doublePayHoursPT, needCompDates, compTakenDates, compTakenCount, compUnresolvedCount };
+      });
+      return { statutoryDays, rows };
+    }
+
+    function syncHolidayPayFromSchedule(monthKey, includeUnresolvedComp) {
+      const mk = monthKey || App.payroll.monthKey;
+      const { rows } = evalMonthlyHolidayCompliance(mk);
+      let updatedCount = 0;
+      rows.forEach(r => {
+        const rec = ensurePayrollAtt(mk, r.emp);
+        if (r.emp.type === 'FT') {
+          const payDates = [...r.doublePayDates];
+          if (includeUnresolvedComp && r.compUnresolvedCount > 0) {
+            r.needCompDates.slice(0, r.compUnresolvedCount).forEach(d => {
+              if (!payDates.includes(d)) payDates.push(d);
+            });
+          }
+          rec.holidaysWorked = payDates;
+          updatedCount++;
+        } else {
+          rec.holidaysWorked = [...r.doublePayDates];
+          rec.holidayHoursPT = r.doublePayHoursPT;
+          updatedCount++;
+        }
+      });
+      App.toast = includeUnresolvedComp
+        ? `💰 已依排班表帶入 ${updatedCount} 位員工的國定假日雙倍薪，並將未排補假併入折發工資！`
+        : `🔄 已依排班表自動帶入 ${updatedCount} 位員工的國定假日雙倍薪（未補假者可於排班表安排「國定假日補休」或按折發工資）。`;
+      render();
+    }
+
     function calcPayslip(emp, att, monthKey) {
       const mk = monthKey || App.payroll.monthKey;
       const rules = App.payroll.rules;
@@ -3582,13 +3655,12 @@ end $$;`;
     function syncShiftTemplatesCatalog() {
       const list = Array.isArray(App.storeSettings.shiftTemplates) ? App.storeSettings.shiftTemplates : [];
       // 保留系統固定休假模板，清除舊的上班模板後重新寫入
-      Object.keys(SHIFT_TEMPLATES).forEach(k => {
-        if (k !== 'OFF_REG' && k !== 'OFF_REST') delete SHIFT_TEMPLATES[k];
+      const sysOffCodes = ['OFF_REG', 'OFF_REST', 'OFF_HOLIDAY', 'OFF_HOLIDAY_COMP'];
+      const savedOff = {};
+      sysOffCodes.forEach(c => {
+        if (SHIFT_TEMPLATES[c]) savedOff[c] = SHIFT_TEMPLATES[c];
       });
-      const offReg = SHIFT_TEMPLATES.OFF_REG;
-      const offRest = SHIFT_TEMPLATES.OFF_REST;
-      delete SHIFT_TEMPLATES.OFF_REG;
-      delete SHIFT_TEMPLATES.OFF_REST;
+      Object.keys(SHIFT_TEMPLATES).forEach(k => delete SHIFT_TEMPLATES[k]);
       list.forEach(t => {
         if (!t || !t.code) return;
         const sh = _parseTimeToHour(t.startTime);
@@ -3609,8 +3681,9 @@ end $$;`;
           isOvernight,
         };
       });
-      if (offReg) SHIFT_TEMPLATES.OFF_REG = offReg;
-      if (offRest) SHIFT_TEMPLATES.OFF_REST = offRest;
+      sysOffCodes.forEach(c => {
+        if (savedOff[c]) SHIFT_TEMPLATES[c] = savedOff[c];
+      });
     }
     function saveShiftTemplate(e) {
       if (e) e.preventDefault();
@@ -4479,10 +4552,10 @@ end $$;`;
                           const isClosed = getEffectiveDayConfig(d.date).isClosed;
                           const hol = TAIWAN_HOLIDAYS_2026.find(h => h.date === d.date);
                           return `
-                            <th onclick="jumpSchedToDate('${d.date}')" title="${hol ? `${hol.name}（${hol.law}）` : `${d.shortDate} ${d.dayLabel}`}" class="p-1.5 text-center border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-teal-50 ${hol ? (hol.kind === '選舉日' ? 'bg-indigo-100/70 text-indigo-900' : 'bg-amber-100/70 text-amber-900') : isClosed ? 'bg-slate-100/80 text-slate-400' : (d.isPeak ? 'bg-amber-50/50 text-amber-800' : '')}">
+                            <th onclick="jumpSchedToDate('${d.date}')" title="${hol ? `${hol.name}（${hol.law}）` : `${d.shortDate} ${d.dayLabel}`}" class="p-1.5 text-center border-r border-slate-100 last:border-r-0 cursor-pointer hover:bg-teal-50 ${hol ? (hol.kind === '選舉日' ? 'bg-indigo-100/70 text-indigo-900' : hol.kind === '補假' ? 'bg-slate-200/70 text-slate-700' : 'bg-amber-100/70 text-amber-900') : isClosed ? 'bg-slate-100/80 text-slate-400' : (d.isPeak ? 'bg-amber-50/50 text-amber-800' : '')}">
                               <div class="text-[10px]">${d.dayLabel.replace('週','')}</div>
                               <div class="mono-num font-bold">${d.dayNum}</div>
-                              ${hol ? `<div class="text-[9px] leading-tight font-bold px-1 rounded mt-0.5 ${hol.kind === '選舉日' ? 'bg-indigo-600 text-white' : 'bg-amber-600 text-white'}">${hol.kind === '選舉日' ? '選' : '假'}</div>` : ''}
+                              ${hol ? `<div class="text-[9px] leading-tight font-bold px-1 rounded mt-0.5 ${hol.kind === '選舉日' ? 'bg-indigo-600 text-white' : hol.kind === '補假' ? 'bg-slate-500 text-white' : 'bg-amber-600 text-white'}">${hol.kind === '選舉日' ? '選' : hol.kind === '補假' ? '補' : '假'}</div>` : ''}
                             </th>
                           `;
                         }).join('')}
@@ -4510,11 +4583,20 @@ end $$;`;
                               const segs = isClosed ? [] : getShiftSegments(s);
                               const tpl = s ? SHIFT_TEMPLATES[s.shiftCode] : null;
                               const wObj = (s && (App.storeSettings.workstations.find(w => w.code === s.station) || STATIONS[s.station])) || null;
+                              const offBadge = !isClosed && segs.length === 0 && s
+                                ? (s.shiftCode === 'OFF_HOLIDAY_COMP'
+                                  ? `<div class="rounded py-0.5 px-0.5 text-[9px] font-bold bg-indigo-50 text-indigo-700">補休</div>`
+                                  : s.shiftCode === 'OFF_HOLIDAY'
+                                    ? `<div class="rounded py-0.5 px-0.5 text-[9px] font-bold bg-amber-50 text-amber-800">國休</div>`
+                                    : s.shiftCode === 'OFF_REG'
+                                      ? `<span class="text-[10px] font-semibold text-rose-400">例</span>`
+                                      : '')
+                                : '';
                               return `
-                                <td onclick="App.sched.editingShiftModal={empId:'${emp.id}',date:'${d.date}',isNew:${segs.length===0}};render()" class="p-1 border-r border-slate-100 last:border-r-0 text-center cursor-pointer hover:bg-teal-50/60 ${isClosed ? 'bg-slate-50/80' : ''}" title="${emp.name} ${d.shortDate} ${segs.length ? segs.map(g=>g.label).join(' / ') : (isClosed ? '店休' : '點擊排班')}">
+                                <td onclick="App.sched.editingShiftModal={empId:'${emp.id}',date:'${d.date}',isNew:${segs.length===0}};render()" class="p-1 border-r border-slate-100 last:border-r-0 text-center cursor-pointer hover:bg-teal-50/60 ${isClosed ? 'bg-slate-50/80' : ''}" title="${emp.name} ${d.shortDate} ${segs.length ? segs.map(g=>g.label).join(' / ') : (tpl && tpl.isOff ? tpl.name : (isClosed ? '店休' : '點擊排班'))}">
                                   ${segs.length > 0
                                     ? `<div class="rounded py-0.5 px-0.5 text-[10px] font-bold truncate" style="background:${wObj ? wObj.badgeBg : '#CCFBF1'};color:${wObj ? wObj.badgeText : '#0F766E'};">${tpl ? tpl.shortLabel.slice(0, 3) : '班'}</div>`
-                                    : `<span class="text-[10px] text-slate-300">${isClosed ? '休' : '·'}</span>`
+                                    : (offBadge || `<span class="text-[10px] text-slate-300">${isClosed ? '休' : '·'}</span>`)
                                   }
                                 </td>
                               `;
@@ -5082,13 +5164,72 @@ end $$;`;
           <div class="no-print rounded-xl border ${monthHolidays.length > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-slate-50 border-slate-200'} px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs">
             <span class="font-bold ${monthHolidays.length > 0 ? 'text-amber-900' : 'text-slate-600'}">📅 ${monthMeta.label} 政府行事曆特殊日期：</span>
             ${monthHolidays.length > 0 ? monthHolidays.map(h => `
-              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border ${h.kind === '選舉日' ? 'border-indigo-200 text-indigo-900' : 'border-amber-200 text-amber-900'} font-semibold" title="${h.law}">
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border ${h.kind === '選舉日' ? 'border-indigo-200 text-indigo-900' : h.kind === '補假' ? 'border-slate-200 text-slate-600' : 'border-amber-200 text-amber-900'} font-semibold" title="${h.law}">
                 <span class="mono-num font-bold">${h.date.slice(5)}</span>
                 <span>${h.name}</span>
-                <span class="text-[10px] px-1.5 py-0.2 rounded ${h.kind === '選舉日' ? 'bg-indigo-50 text-indigo-700' : 'bg-amber-100 text-amber-800'}">${h.kind}</span>
+                <span class="text-[10px] px-1.5 py-0.2 rounded ${h.kind === '選舉日' ? 'bg-indigo-50 text-indigo-700' : h.kind === '補假' ? 'bg-slate-100 text-slate-600' : 'bg-amber-100 text-amber-800'}">${h.kind}</span>
               </span>
             `).join('') : `<span class="text-slate-500">本月無國定假日或選舉投票日（常態計薪月份）</span>`}
           </div>
+
+          <!-- 一例一休 × 國定假日逐人自動判定表（雙倍薪 vs 須補假） -->
+          ${(() => {
+            const holEval = evalMonthlyHolidayCompliance(mk);
+            if (!holEval.statutoryDays.length || !holEval.rows.length) return '';
+            const totalNeedComp = holEval.rows.reduce((a, r) => a + r.compUnresolvedCount, 0);
+            return `
+              <div class="no-print bg-white border border-amber-200 rounded-xl overflow-hidden text-xs">
+                <div class="px-4 py-2.5 bg-amber-50/70 border-b border-amber-200/80 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div class="font-bold text-amber-950">📋 本月國定假日 × 一例一休逐人判定（依排班表與門市公休自動計算）</div>
+                    <div class="text-[11px] text-amber-800 mt-0.5">系統自動比對每位員工在國定假日／選舉日當天的排班與例休日：有出勤→雙倍薪；正職撞公休／例假／休息日→依法須補假 1 日或折發工資。</div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button type="button" onclick="syncHolidayPayFromSchedule('${mk}', false)" class="h-7 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">🔄 依排班表帶入雙倍薪</button>
+                    ${totalNeedComp > 0 ? `<button type="button" onclick="syncHolidayPayFromSchedule('${mk}', true)" class="h-7 px-3 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold cursor-pointer">💰 未補假 (${totalNeedComp}日) 一併折發工資</button>` : ''}
+                  </div>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-left text-[11px]">
+                    <thead>
+                      <tr class="border-b border-slate-100 bg-slate-50 text-slate-500 whitespace-nowrap">
+                        <th class="px-3 py-2">員工</th>
+                        ${holEval.statutoryDays.map(h => `<th class="px-2.5 py-2">${h.date.slice(5)} ${h.name.replace(/（.*?）/g, '')}</th>`).join('')}
+                        <th class="px-3 py-2">補假追蹤（正職）</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${holEval.rows.map(r => `
+                        <tr class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60">
+                          <td class="px-3 py-2 whitespace-nowrap font-bold text-slate-900">${r.emp.name} <span class="text-[10px] font-normal text-slate-500">(${r.emp.type})</span></td>
+                          ${r.dayResults.map(dr => `
+                            <td class="px-2.5 py-2 whitespace-nowrap">
+                              <span class="inline-flex items-center px-2 py-0.5 rounded font-semibold ${
+                                dr.status === 'DOUBLE_PAY' ? 'bg-amber-100 text-amber-900' :
+                                dr.status === 'NEED_COMP' ? 'bg-rose-50 text-rose-700 border border-rose-200' :
+                                dr.status === 'HOLIDAY_OFF' ? 'bg-emerald-50 text-emerald-700' :
+                                'text-slate-400'
+                              }">${dr.status === 'DOUBLE_PAY' ? '💰 ' : dr.status === 'NEED_COMP' ? '📅 ' : dr.status === 'HOLIDAY_OFF' ? '✅ ' : ''}${dr.label}</span>
+                            </td>
+                          `).join('')}
+                          <td class="px-3 py-2 whitespace-nowrap">
+                            ${r.emp.type === 'PT'
+                              ? `<span class="text-slate-400">計時無須補假</span>`
+                              : r.needCompDates.length === 0
+                                ? `<span class="text-emerald-700 font-semibold">✅ 無須補假</span>`
+                                : r.compUnresolvedCount === 0
+                                  ? `<span class="text-emerald-700 font-semibold">✅ 已排補休 ${r.compTakenCount} 日</span>`
+                                  : `<span class="text-rose-700 font-bold">⚠️ 尚欠補假 ${r.compUnresolvedCount} 日（已補 ${r.compTakenCount}/${r.needCompDates.length}）</span>`
+                            }
+                          </td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            `;
+          })()}
 
           ${App.payroll.showRulesBar ? `
             <div class="no-print bg-white border border-[var(--border)] rounded-xl p-3.5 flex flex-wrap items-center gap-4 text-xs">
@@ -5252,11 +5393,11 @@ end $$;`;
                         <div><label class="block font-semibold text-amber-800 mb-1">假日雙倍工時 (h)</label><input type="number" step="0.5" min="0" value="${rec.holidayHoursPT||0}" onfocus="this.select()" onchange="updatePayrollAttField('${mk}','${active.emp.id}','holidayHoursPT',this.value)" class="w-full h-8 px-2 rounded-lg border border-amber-300 bg-amber-50/40 mono-num font-bold" /></div>
                       ` : ''}
                     </div>
-                    ${active.emp.type === 'FT' && monthHolidays.length > 0 ? `
+                    ${active.emp.type === 'FT' && monthHolidays.some(h => h.kind !== '補假') ? `
                       <div class="pt-1 border-t border-slate-100 space-y-1.5">
-                        <div class="font-semibold text-amber-900">本月國定假日／選舉日出勤勾選（正職勾選即加發 1 日雙倍工資）：</div>
+                        <div class="font-semibold text-amber-900">本月法定國定假日／選舉日出勤或未補假折現勾選（正職每勾 1 日加發 1 日工資）：</div>
                         <div class="flex flex-wrap gap-2">
-                          ${monthHolidays.map(h => {
+                          ${monthHolidays.filter(h => h.kind !== '補假').map(h => {
                             const checked = (rec.holidaysWorked || []).includes(h.date);
                             return `
                               <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border cursor-pointer ${checked ? 'bg-amber-50 border-amber-300 text-amber-900 font-bold' : 'bg-slate-50 border-slate-200 text-slate-700'}">
