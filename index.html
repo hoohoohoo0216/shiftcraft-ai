@@ -566,6 +566,8 @@
         phoneTab: 'PUNCH',
         filterEmp: 'ALL',
         filterStatus: 'ALL',
+        filterDateFrom: '',
+        filterDateTo: '',
         searchDate: '',
         draft: { date: '2026-11-21', type: 'MISSING_OUT', reqIn: '08:30', reqOut: '17:05', witnessId: 'emp-01', reason: '' },
         logs: [
@@ -3054,17 +3056,60 @@ end $$;`;
       render();
     }
 
+    function getFilteredAttendanceLogs() {
+      const a = App.attendance;
+      const from = (a.filterDateFrom || '').trim();
+      const to = (a.filterDateTo || '').trim();
+      return (a.logs || []).filter(l => {
+        if (a.filterEmp !== 'ALL' && l.employeeId !== a.filterEmp) return false;
+        if (a.searchDate && l.date !== a.searchDate) return false;
+        if (from && l.date < from) return false;
+        if (to && l.date > to) return false;
+        if (a.filterStatus === 'ANOMALY') return l.status === 'MISSING_IN' || l.status === 'MISSING_OUT' || l.status === 'LATE';
+        if (a.filterStatus !== 'ALL') return l.status === a.filterStatus;
+        return true;
+      });
+    }
+
+    function setAttendanceDatePreset(preset) {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      if (preset === 'ALL') {
+        App.attendance.filterDateFrom = '';
+        App.attendance.filterDateTo = '';
+      } else if (preset === 'LAST_7') {
+        const start = new Date(now);
+        start.setDate(start.getDate() - 6);
+        App.attendance.filterDateFrom = fmt(start);
+        App.attendance.filterDateTo = fmt(now);
+      } else if (preset === 'THIS_MONTH') {
+        const y = now.getFullYear(), m = now.getMonth();
+        App.attendance.filterDateFrom = fmt(new Date(y, m, 1));
+        App.attendance.filterDateTo = fmt(new Date(y, m + 1, 0));
+      } else if (preset === 'PREV_MONTH') {
+        const y = now.getFullYear(), m = now.getMonth() - 1;
+        App.attendance.filterDateFrom = fmt(new Date(y, m, 1));
+        App.attendance.filterDateTo = fmt(new Date(y, m + 1, 0));
+      }
+      render();
+    }
+
     function exportAttendanceCsv() {
       const headers = ['出勤日期', '員工編號', '員工姓名', '排定班次', '實際上班', '實際下班', '實計工時', '驗證方式', '狀態備註'];
-      const rows = App.attendance.logs.map(l => {
+      const filtered = getFilteredAttendanceLogs();
+      const rows = filtered.map(l => {
         const e = App.employees.find(x => x.id === l.employeeId) || { code: '', name: '' };
         return [l.date, e.code, e.name, l.scheduled, l.clockIn || '未打卡', l.clockOut || '未打卡', calcWorkedLabel(l.clockIn, l.clockOut), l.method, l.note];
       });
       const csv = '\uFEFF' + [headers, ...rows].map(r => r.join(',')).join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = 'ShiftCraft_勞基法出勤紀錄_2026-11.csv'; a.click(); URL.revokeObjectURL(url);
-      App.toast = '已匯出符合勞基法第 30 條之出勤紀錄 CSV。';
+      const from = App.attendance.filterDateFrom || '';
+      const to = App.attendance.filterDateTo || '';
+      const rangeTag = (from || to) ? `${from || '起'}_至_${to || '迄'}` : new Date().toISOString().slice(0, 7);
+      const a = document.createElement('a'); a.href = url; a.download = `ShiftCraft_勞基法出勤紀錄_${rangeTag}.csv`; a.click(); URL.revokeObjectURL(url);
+      App.toast = `已匯出 ${filtered.length} 筆符合勞基法第 30 條之出勤紀錄 CSV。`;
       render();
     }
 
@@ -5083,13 +5128,7 @@ end $$;`;
     // ============================================================================
     function renderAttendanceModule() {
       const a = App.attendance;
-      const filteredLogs = a.logs.filter(l => {
-        if (a.filterEmp !== 'ALL' && l.employeeId !== a.filterEmp) return false;
-        if (a.searchDate && l.date !== a.searchDate) return false;
-        if (a.filterStatus === 'ANOMALY') return l.status === 'MISSING_IN' || l.status === 'MISSING_OUT' || l.status === 'LATE';
-        if (a.filterStatus !== 'ALL') return l.status === a.filterStatus;
-        return true;
-      });
+      const filteredLogs = getFilteredAttendanceLogs();
       const pendingMpCnt = a.corrections.filter(c => c.status === 'PENDING').length;
 
       return `
@@ -5136,26 +5175,45 @@ end $$;`;
 
           <!-- 出勤紀錄表 -->
           <div class="bg-white border border-[var(--border)] rounded-xl overflow-hidden">
-            <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
-              <h3 class="text-sm font-bold text-slate-900">全店出勤打卡紀錄（勞基法第 30 條）</h3>
-              <div class="flex items-center gap-2 flex-wrap text-xs">
-                <select onchange="App.attendance.filterEmp=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
-                  <option value="ALL">全部員工</option>
-                  ${App.employees.map(e => `<option value="${e.id}" ${a.filterEmp===e.id?'selected':''}>${e.name}</option>`).join('')}
-                </select>
-                <select onchange="App.attendance.filterStatus=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
-                  <option value="ALL" ${a.filterStatus==='ALL'?'selected':''}>全部狀態</option>
-                  <option value="ANOMALY" ${a.filterStatus==='ANOMALY'?'selected':''}>僅看異常</option>
-                  <option value="NORMAL" ${a.filterStatus==='NORMAL'?'selected':''}>正常出勤</option>
-                </select>
-                ${hasRolePerm('exportCsv') ? `<button onclick="exportAttendanceCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出 CSV</button>` : ''}
+            <div class="px-4 py-3 border-b border-[var(--border)] space-y-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <h3 class="text-sm font-bold text-slate-900">全店出勤打卡紀錄（勞基法第 30 條）</h3>
+                  <span class="text-[11px] text-slate-500 mono-num">共 ${filteredLogs.length} 筆</span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap text-xs">
+                  <select onchange="App.attendance.filterEmp=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
+                    <option value="ALL">全部員工</option>
+                    ${App.employees.map(e => `<option value="${e.id}" ${a.filterEmp===e.id?'selected':''}>${e.name}</option>`).join('')}
+                  </select>
+                  <select onchange="App.attendance.filterStatus=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
+                    <option value="ALL" ${a.filterStatus==='ALL'?'selected':''}>全部狀態</option>
+                    <option value="ANOMALY" ${a.filterStatus==='ANOMALY'?'selected':''}>僅看異常</option>
+                    <option value="NORMAL" ${a.filterStatus==='NORMAL'?'selected':''}>正常出勤</option>
+                  </select>
+                  ${hasRolePerm('exportCsv') ? `<button onclick="exportAttendanceCsv()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-slate-900 text-white font-semibold cursor-pointer">${ICONS.download} 匯出 CSV</button>` : ''}
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span class="text-slate-500 font-semibold">日期區間：</span>
+                <input type="date" value="${a.filterDateFrom||''}" onchange="App.attendance.filterDateFrom=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                <span class="text-slate-400">~</span>
+                <input type="date" value="${a.filterDateTo||''}" onchange="App.attendance.filterDateTo=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                <div class="inline-flex items-center gap-1 flex-wrap">
+                  <button type="button" onclick="setAttendanceDatePreset('LAST_7')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">近 7 天</button>
+                  <button type="button" onclick="setAttendanceDatePreset('THIS_MONTH')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">本月</button>
+                  <button type="button" onclick="setAttendanceDatePreset('PREV_MONTH')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">上月</button>
+                  ${(a.filterDateFrom || a.filterDateTo) ? `<button type="button" onclick="setAttendanceDatePreset('ALL')" class="h-7 px-2.5 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold cursor-pointer">清除日期</button>` : ''}
+                </div>
               </div>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full border-collapse text-left min-w-[780px] text-xs">
                 <thead><tr class="border-b border-[var(--border)] bg-slate-50 text-slate-500"><th class="p-3">日期</th><th class="p-3">員工</th><th class="p-3">排定班次</th><th class="p-3">上班</th><th class="p-3">下班</th><th class="p-3">實計工時</th><th class="p-3">驗證方式</th><th class="p-3">狀態</th></tr></thead>
                 <tbody>
-                  ${filteredLogs.map(l => {
+                  ${filteredLogs.length === 0 ? `
+                    <tr><td colspan="8" class="p-8 text-center text-slate-400">此篩選條件下尚無出勤打卡紀錄</td></tr>
+                  ` : filteredLogs.map(l => {
                     const e = App.employees.find(x => x.id === l.employeeId) || { name: '未知' };
                     const isMiss = l.status === 'MISSING_IN' || l.status === 'MISSING_OUT';
                     return `
