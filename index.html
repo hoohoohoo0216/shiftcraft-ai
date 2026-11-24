@@ -696,9 +696,10 @@
       auth: {
         loggedIn: false,
         isDemo: false,
-        authMode: 'LOGIN', // LOGIN | REGISTER
+        authMode: 'LOGIN', // LOGIN | REGISTER | FORGOT | RESET
         authBusy: false,
         authError: '',
+        authSuccessMsg: '',
         email: '',
         companyName: '',
         ownerName: '',
@@ -714,6 +715,7 @@
         idleTimeoutMinutes: 60,
         lastLoginAt: '',
         loginDraft: { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 },
+        resetDraft: { password: '', confirm: '' },
         pwdDraft: { current: '', next: '', confirm: '' },
         sessions: [
           { id: 'sess-1', device: '目前瀏覽器連線', location: '台灣', lastActive: '目前使用中', current: true },
@@ -1129,7 +1131,38 @@
       }
     }
 
+    const PENDING_SIGNUP_KEY = 'shiftcraft_pending_signup_v1';
+    let _sbAuthListenerBound = false;
+
+    function bindSupabaseAuthListener() {
+      if (_sbAuthListenerBound) return;
+      const sb = getAccountSupabaseClient();
+      if (!sb || !sb.auth || typeof sb.auth.onAuthStateChange !== 'function') return;
+      _sbAuthListenerBound = true;
+      sb.auth.onAuthStateChange((event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          App.auth.loggedIn = false;
+          App.auth.isDemo = false;
+          App.auth.authMode = 'RESET';
+          App.auth.authError = '';
+          App.auth.authSuccessMsg = '驗證連結有效，請設定您的新高強度密碼。';
+          App.auth.resetDraft = { password: '', confirm: '' };
+          render();
+        }
+      });
+    }
+
     function restoreAuthSession() {
+      bindSupabaseAuthListener();
+      // 若網址為密碼重設連結，直接進入重設畫面
+      try {
+        if (window.location && window.location.hash && window.location.hash.includes('type=recovery')) {
+          App.auth.loggedIn = false;
+          App.auth.authMode = 'RESET';
+          App.auth.authSuccessMsg = '驗證連結有效，請設定您的新高強度密碼。';
+          return;
+        }
+      } catch (e) {}
       // 若為員工從 LINE 開啟，不強制跳轉登入頁
       const isLineBoot = !!(App.lineLiff && App.lineLiff.bootLoading);
       if (isLineBoot) return;
@@ -1269,10 +1302,78 @@
       e.preventDefault();
       if (App.auth.authBusy) return;
       const d = App.auth.loginDraft;
+      const mode = App.auth.authMode;
       const email = (d.email || '').trim().toLowerCase();
       const password = String(d.password || '');
-      const isRegister = App.auth.authMode === 'REGISTER';
 
+      const sb = getAccountSupabaseClient();
+      if (!sb) {
+        App.auth.authError = '目前無法連線雲端帳號服務，請檢查網路後重試。';
+        render();
+        return;
+      }
+
+      // 模式 1：忘記密碼寄信重設
+      if (mode === 'FORGOT') {
+        if (!email || !email.includes('@')) {
+          App.auth.authError = '請輸入您註冊時使用的 Email 帳號。';
+          render();
+          return;
+        }
+        App.auth.authBusy = true;
+        App.auth.authError = '';
+        App.auth.authSuccessMsg = '';
+        render();
+        try {
+          const redirectTo = window.location.origin + window.location.pathname;
+          const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+          if (error) throw error;
+          App.auth.authBusy = false;
+          App.auth.authSuccessMsg = `📧 密碼重設信已寄至 ${email}，請至信箱點擊連結即可設定新密碼（若未收到請檢查垃圾信件匣）。`;
+          render();
+        } catch (err) {
+          App.auth.authBusy = false;
+          App.auth.authError = '寄送重設信失敗：' + ((err && err.message) || err);
+          render();
+        }
+        return;
+      }
+
+      // 模式 2：從信箱連結回來重設新密碼
+      if (mode === 'RESET') {
+        const rd = App.auth.resetDraft || { password: '', confirm: '' };
+        const pwCheck = evaluatePasswordStrength(rd.password, email);
+        if (!pwCheck.ok) {
+          App.auth.authError = '新密碼強度不足：' + pwCheck.errors.join('、') + '。';
+          render();
+          return;
+        }
+        if (rd.password !== rd.confirm) {
+          App.auth.authError = '兩次輸入的新密碼不一致，請重新確認。';
+          render();
+          return;
+        }
+        App.auth.authBusy = true;
+        App.auth.authError = '';
+        render();
+        try {
+          const { error } = await sb.auth.updateUser({ password: rd.password });
+          if (error) throw error;
+          App.auth.authBusy = false;
+          App.auth.resetDraft = { password: '', confirm: '' };
+          App.auth.authMode = 'LOGIN';
+          App.auth.authSuccessMsg = '✅ 密碼已重設完成！請使用您的新密碼登入後台。';
+          try { if (window.history && window.history.replaceState) window.history.replaceState({}, '', window.location.pathname); } catch (ex) {}
+          render();
+        } catch (err) {
+          App.auth.authBusy = false;
+          App.auth.authError = '重設密碼失敗（連結可能已逾期，請重新申請）：' + ((err && err.message) || err);
+          render();
+        }
+        return;
+      }
+
+      const isRegister = mode === 'REGISTER';
       if (!email || !email.includes('@')) {
         App.auth.authError = '請輸入正確的 Email 帳號。';
         render();
@@ -1303,116 +1404,209 @@
         }
         const lock = getLoginLockoutInfo(email);
         if (lock.locked) {
-          App.auth.authError = `此帳號連續密碼錯誤達 5 次，為防止暴力破解已暫時鎖定，請於 ${lock.remainMins} 分鐘後再試。`;
+          App.auth.authError = `此帳號連續密碼錯誤過多，已暫時鎖定，請於 ${lock.remainMins} 分鐘後再試。`;
           render();
           return;
         }
       }
 
-      const sb = getAccountSupabaseClient();
-      if (!sb) {
-        App.auth.authError = '目前無法連線雲端帳號服務，請檢查網路後重試。';
-        render();
-        return;
-      }
-
       App.auth.authBusy = true;
       App.auth.authError = '';
+      App.auth.authSuccessMsg = '';
       render();
+
+      const _finishBrandProvision = async (authUserId, brandName, storeCnt) => {
+        const newBrandId = 'brand-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+        const trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString();
+        const newAcc = {
+          email,
+          auth_user_id: authUserId,
+          password_hash: 'SUPABASE_AUTH_MANAGED',
+          brand_id: newBrandId,
+          company_name: brandName,
+          plan_code: 'PRO',
+          sub_status: 'TRIAL',
+          billing_cycle: 'MONTHLY',
+          max_stores: storeCnt,
+          trial_ends_at: trialEndsAt,
+          paid_until: null,
+          note: '官網自助註冊 14 天試用',
+          last_login_at: new Date().toISOString(),
+        };
+        let { error: insErr } = await sb.from('shiftcraft_accounts').insert(newAcc);
+        if (insErr && String(insErr.message || '').includes('auth_user_id')) {
+          const fallbackAcc = { ...newAcc };
+          delete fallbackAcc.auth_user_id;
+          const r2 = await sb.from('shiftcraft_accounts').insert(fallbackAcc);
+          insErr = r2.error;
+        }
+        if (insErr) throw insErr;
+        try { localStorage.removeItem(PENDING_SIGNUP_KEY); } catch (ex) {}
+        resetWorkspaceForNewBrand(brandName, storeCnt, email);
+        applyAccountRecord(newAcc);
+        App.auth.weakPasswordWarning = false;
+        App.mainTab = 'HR';
+        App.auth.authBusy = false;
+        App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
+        App.toast = `🎉 歡迎加入班匠！「${brandName}」全新空白門市空間已建立，14 天免費試用啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），請先新增您的第一位員工！`;
+        render();
+        await initCloudSync(false);
+        for (const stMeta of App.multiStore.stores) {
+          await pushStoreToCloud(stMeta.id);
+        }
+      };
 
       try {
         if (isRegister) {
-          const pwHash = await hashAccountPassword(email, password);
-          const { data: existing, error: checkErr } = await sb
-            .from('shiftcraft_accounts')
-            .select('email')
-            .eq('email', email)
-            .maybeSingle();
-          if (checkErr) throw checkErr;
-          if (existing) {
+          const brandName = d.companyName.trim();
+          const storeCnt = Math.max(1, Math.min(50, Number(d.storeCount) || 1));
+          const redirectTo = window.location.origin + window.location.pathname;
+          const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
+            email,
+            password,
+            options: { emailRedirectTo: redirectTo, data: { company_name: brandName, store_count: storeCnt } },
+          });
+          if (signUpErr) {
+            const em = String(signUpErr.message || '');
+            if (em.toLowerCase().includes('already registered')) {
+              App.auth.authBusy = false;
+              App.auth.authError = '這個 Email 已經註冊過了，請切到「業者帳號登入」直接登入。';
+              render();
+              return;
+            }
+            throw signUpErr;
+          }
+          // 若 Supabase 後台開啟「信箱驗證」，先暫存品牌資訊並提示收信
+          if (!signUpData.session) {
+            try {
+              localStorage.setItem(PENDING_SIGNUP_KEY, JSON.stringify({ email, brandName, storeCnt }));
+            } catch (ex) {}
             App.auth.authBusy = false;
-            App.auth.authError = '這個 Email 已經註冊過了，請切到「業者帳號登入」直接登入。';
+            App.auth.authMode = 'LOGIN';
+            App.auth.authSuccessMsg = `📧 帳號驗證信已寄至 ${email}！請至信箱點擊驗證連結後，再回到這裡登入即可開通 14 天試用。`;
             render();
             return;
           }
-
-          const brandName = d.companyName.trim();
-          const storeCnt = Math.max(1, Math.min(50, Number(d.storeCount) || 1));
-          const newBrandId = 'brand-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-          const trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString();
-
-          const newAcc = {
-            email,
-            password_hash: pwHash,
-            brand_id: newBrandId,
-            company_name: brandName,
-            plan_code: 'PRO',
-            sub_status: 'TRIAL',
-            billing_cycle: 'MONTHLY',
-            max_stores: storeCnt,
-            trial_ends_at: trialEndsAt,
-            paid_until: null,
-            note: '官網自助註冊 14 天試用',
-            last_login_at: new Date().toISOString(),
-          };
-
-          const { error: insErr } = await sb.from('shiftcraft_accounts').insert(newAcc);
-          if (insErr) throw insErr;
-
-          resetWorkspaceForNewBrand(brandName, storeCnt, email);
-
-          applyAccountRecord(newAcc);
-          App.auth.weakPasswordWarning = false;
-          App.mainTab = 'HR';
-          App.auth.authBusy = false;
-          App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
-          App.toast = `🎉 歡迎加入班匠！「${brandName}」全新空白門市空間已建立，14 天免費試用啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），請先新增您的第一位員工！`;
-          render();
-          await initCloudSync(false);
-          for (const stMeta of App.multiStore.stores) {
-            await pushStoreToCloud(stMeta.id);
-          }
+          await _finishBrandProvision(signUpData.user.id, brandName, storeCnt);
         } else {
-          // LOGIN
-          const { data: acc, error: selErr } = await sb
+          // LOGIN：優先使用 Supabase 官方 Auth 登入
+          let authUser = null;
+          let usedLegacyFallback = false;
+          const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({ email, password });
+
+          if (!signInErr && signInData && signInData.user) {
+            authUser = signInData.user;
+          } else {
+            // 若 Supabase Auth 尚未建立此舊帳號，嘗試無痛遷移舊帳號
+            const legHash = await hashAccountPasswordLegacy(email, password);
+            let legacyValid = false;
+            // 優先透過 SECURITY DEFINER RPC 驗證舊帳號（RLS 開啟後也能安全遷移）
+            try {
+              const { data: rpcOk, error: rpcErr } = await sb.rpc('verify_legacy_account', {
+                p_email: email,
+                p_legacy_hash: legHash,
+              });
+              if (!rpcErr && rpcOk === true) legacyValid = true;
+            } catch (ex) {}
+
+            // 若尚未安裝 RPC（RLS 開啟前過渡期），直接查表驗證
+            let preRlsAcc = null;
+            if (!legacyValid) {
+              try {
+                const { data: accRow } = await sb
+                  .from('shiftcraft_accounts')
+                  .select('*')
+                  .eq('email', email)
+                  .maybeSingle();
+                if (accRow && accRow.password_hash && accRow.password_hash !== 'SUPABASE_AUTH_MANAGED') {
+                  const v = await verifyAccountPassword(email, password, accRow.password_hash);
+                  if (v.valid) {
+                    legacyValid = true;
+                    preRlsAcc = accRow;
+                  }
+                }
+              } catch (ex) {}
+            }
+
+            if (legacyValid) {
+              // 自動將舊帳號建立至 Supabase Auth 並綁定 auth_user_id
+              const { data: migSignUp, error: migErr } = await sb.auth.signUp({ email, password });
+              if (!migErr && migSignUp && migSignUp.session && migSignUp.user) {
+                authUser = migSignUp.user;
+                try {
+                  await sb.rpc('claim_legacy_account', { p_email: email, p_legacy_hash: legHash });
+                } catch (ex) {}
+                if (preRlsAcc) {
+                  try {
+                    await sb.from('shiftcraft_accounts').update({
+                      auth_user_id: authUser.id,
+                      password_hash: 'SUPABASE_AUTH_MANAGED',
+                      last_login_at: new Date().toISOString(),
+                    }).eq('email', email);
+                  } catch (ex) {}
+                }
+              } else if (preRlsAcc) {
+                // 若 Supabase 要求信箱驗證，過渡期仍允許舊帳號登入
+                usedLegacyFallback = true;
+                clearLoginFailures(email);
+                _lastUserActivityAt = Date.now();
+                App.auth.weakPasswordWarning = !evaluatePasswordStrength(password, email).ok;
+                applyAccountRecord(preRlsAcc);
+                App.auth.authBusy = false;
+                App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
+                App.toast = `歡迎回來「${App.auth.companyName}」！已為您啟動帳號安全升級，建議至信箱點擊驗證連結完成最後一步。`;
+                render();
+                await initCloudSync(false);
+                return;
+              }
+            }
+
+            if (!authUser && !usedLegacyFallback) {
+              const failInfo = recordLoginFailure(email);
+              App.auth.authBusy = false;
+              const rawMsg = String((signInErr && signInErr.message) || '');
+              if (rawMsg.toLowerCase().includes('email not confirmed')) {
+                App.auth.authError = '您的 Email 尚未完成驗證，請先至信箱點擊驗證連結後再登入。';
+              } else {
+                App.auth.authError = failInfo.locked
+                  ? `密碼連續錯誤過多，已暫時鎖定 ${failInfo.remainMins} 分鐘。`
+                  : `帳號或密碼不正確，請重新輸入（剩餘 ${Math.max(0, 5 - failInfo.failCount)} 次機會）。`;
+              }
+              render();
+              return;
+            }
+          }
+
+          clearLoginFailures(email);
+          _lastUserActivityAt = Date.now();
+          App.auth.weakPasswordWarning = !evaluatePasswordStrength(password, email).ok;
+
+          // 讀取此登入者所屬之品牌帳號資料（受 RLS 保護）
+          let { data: acc, error: selErr } = await sb
             .from('shiftcraft_accounts')
             .select('*')
             .eq('email', email)
             .maybeSingle();
           if (selErr) throw selErr;
+
           if (!acc) {
-            App.auth.authBusy = false;
-            App.auth.authError = '找不到這個 Email 帳號，請確認信箱或先點「免費試用 14 天」註冊。';
-            render();
-            return;
-          }
-          const verifyRes = await verifyAccountPassword(email, password, acc.password_hash);
-          if (!verifyRes.valid) {
-            const failInfo = recordLoginFailure(email);
-            App.auth.authBusy = false;
-            App.auth.authError = failInfo.locked
-              ? `密碼連續錯誤 5 次，為防止暴力破解已鎖定 ${failInfo.remainMins} 分鐘。`
-              : `密碼不正確，請重新輸入（剩餘 ${Math.max(0, 5 - failInfo.failCount)} 次機會）。`;
-            render();
+            // 若剛完成信箱驗證的首次登入，自動建立門市空間
+            let pending = null;
+            try { pending = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null'); } catch (ex) {}
+            const meta = (authUser && authUser.user_metadata) || {};
+            const bName = (pending && pending.email === email && pending.brandName) || meta.company_name || '我的餐飲品牌';
+            const sCnt = (pending && pending.email === email && pending.storeCnt) || meta.store_count || 1;
+            await _finishBrandProvision(authUser.id, bName, sCnt);
             return;
           }
 
-          clearLoginFailures(email);
-          _lastUserActivityAt = Date.now();
-          const updatePayload = { last_login_at: new Date().toISOString() };
-          if (verifyRes.needsUpgrade) {
-            // 無痛自動升級為 PBKDF2 10 萬次加鹽雜湊
-            updatePayload.password_hash = await hashAccountPassword(email, password);
-          }
-          await sb
-            .from('shiftcraft_accounts')
-            .update(updatePayload)
-            .eq('email', email);
-          App.auth.weakPasswordWarning = !evaluatePasswordStrength(password, email).ok;
+          try {
+            await sb.from('shiftcraft_accounts').update({ last_login_at: new Date().toISOString() }).eq('email', email);
+          } catch (ex) {}
 
           applyAccountRecord(acc);
           App.auth.authBusy = false;
-          App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+          App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
           const ent = getAccountEntitlement();
           App.toast = ent.isExpired
             ? `歡迎回來「${App.auth.companyName}」！您的方案已於 ${ent.expiresDateStr} 到期，資料皆已安全保留，請選擇方案續用。`
@@ -2011,16 +2205,47 @@ end $$;`;
       try {
         App.cloud.status = 'SYNCING';
         const encryptedPayload = await encryptStorePayload(payload, ms.brandId);
-        const { error } = await _sbClient.from('shiftcraft_stores').upsert({
-          brand_id: ms.brandId,
-          store_id: sid,
-          store_name: meta.name,
-          city: meta.city || '',
-          payload: encryptedPayload,
-          updated_by: CLOUD_CLIENT_ID,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'brand_id,store_id' });
-        if (error) throw error;
+        let hasAuthSession = false;
+        try {
+          const { data: sData } = await _sbClient.auth.getSession();
+          hasAuthSession = Boolean(sData && sData.session);
+        } catch (ex) {}
+        let err = null;
+        if (!hasAuthSession && !App.auth.loggedIn) {
+          const r = await _sbClient.rpc('liff_upsert_store', {
+            p_brand_id: ms.brandId,
+            p_store_id: sid,
+            p_store_name: meta.name,
+            p_city: meta.city || '',
+            p_payload: encryptedPayload,
+            p_updated_by: CLOUD_CLIENT_ID,
+          });
+          err = r.error;
+          if (err && String(err.message || '').includes('liff_upsert_store')) {
+            const fb = await _sbClient.from('shiftcraft_stores').upsert({
+              brand_id: ms.brandId,
+              store_id: sid,
+              store_name: meta.name,
+              city: meta.city || '',
+              payload: encryptedPayload,
+              updated_by: CLOUD_CLIENT_ID,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'brand_id,store_id' });
+            err = fb.error;
+          }
+        } else {
+          const res = await _sbClient.from('shiftcraft_stores').upsert({
+            brand_id: ms.brandId,
+            store_id: sid,
+            store_name: meta.name,
+            city: meta.city || '',
+            payload: encryptedPayload,
+            updated_by: CLOUD_CLIENT_ID,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'brand_id,store_id' });
+          err = res.error;
+        }
+        if (err) throw err;
         App.cloud.status = 'SYNCED';
         App.cloud.error = null;
         App.cloud.lastSyncedAt = new Date().toLocaleTimeString('zh-TW', { hour12: false });
@@ -2078,12 +2303,40 @@ end $$;`;
         if (_sbChannel && _sbClient) {
           try { _sbClient.removeChannel(_sbChannel); } catch (e) {}
         }
-        _sbClient = window.supabase.createClient(cfg.url, cfg.anonKey);
-        const { data, error } = await _sbClient
-          .from('shiftcraft_stores')
-          .select('*')
-          .eq('brand_id', App.multiStore.brandId)
-          .order('store_id', { ascending: true });
+        // 重用已驗證之 _sbClient，確保 Supabase Auth JWT 憑證隨查詢送出（通過 RLS 驗證）
+        if (!_sbClient) {
+          _sbClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+        }
+        let hasAuthSession = false;
+        try {
+          const { data: sData } = await _sbClient.auth.getSession();
+          hasAuthSession = Boolean(sData && sData.session);
+        } catch (ex) {}
+
+        let data = null;
+        let error = null;
+        if (!hasAuthSession && !App.auth.loggedIn) {
+          const rpcRes = await _sbClient.rpc('liff_get_stores', { p_brand_id: App.multiStore.brandId });
+          if (!rpcRes.error && Array.isArray(rpcRes.data)) {
+            data = rpcRes.data;
+          } else {
+            const fbRes = await _sbClient
+              .from('shiftcraft_stores')
+              .select('*')
+              .eq('brand_id', App.multiStore.brandId)
+              .order('store_id', { ascending: true });
+            data = fbRes.data;
+            error = fbRes.error;
+          }
+        } else {
+          const res = await _sbClient
+            .from('shiftcraft_stores')
+            .select('*')
+            .eq('brand_id', App.multiStore.brandId)
+            .order('store_id', { ascending: true });
+          data = res.data;
+          error = res.error;
+        }
         if (error) throw error;
 
         if (data && data.length > 0) {
@@ -2203,9 +2456,14 @@ end $$;`;
       App.auth.isDemo = false;
       App.auth.authMode = 'LOGIN';
       App.auth.authError = '';
+      App.auth.authSuccessMsg = '';
       App.auth.weakPasswordWarning = false;
       App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
       try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+      try {
+        const sb = getAccountSupabaseClient();
+        if (sb && sb.auth) sb.auth.signOut().catch(() => {});
+      } catch (e) {}
       App.toast = customMsg || '已安全登出系統。';
       render();
     }
@@ -2226,26 +2484,40 @@ end $$;`;
         if (sb) {
           try {
             const normEmail = App.auth.email.trim().toLowerCase();
-            const { data: acc, error: selErr } = await sb
-              .from('shiftcraft_accounts')
-              .select('password_hash')
-              .eq('email', normEmail)
-              .maybeSingle();
-            if (selErr) throw selErr;
-            if (acc && acc.password_hash) {
-              const ver = await verifyAccountPassword(normEmail, p.current, acc.password_hash);
-              if (!ver.valid) {
+            // 優先透過 Supabase 官方 Auth 驗證目前密碼並更新
+            const { data: sData } = await sb.auth.getSession();
+            if (sData && sData.session) {
+              const { error: reAuthErr } = await sb.auth.signInWithPassword({ email: normEmail, password: p.current });
+              if (reAuthErr) {
                 App.toast = '目前密碼不正確，無法變更密碼。';
                 render();
                 return;
               }
+              const { error: updErr } = await sb.auth.updateUser({ password: p.next });
+              if (updErr) throw updErr;
+            } else {
+              // 過渡期舊帳號相容更新
+              const { data: acc, error: selErr } = await sb
+                .from('shiftcraft_accounts')
+                .select('password_hash')
+                .eq('email', normEmail)
+                .maybeSingle();
+              if (selErr) throw selErr;
+              if (acc && acc.password_hash) {
+                const ver = await verifyAccountPassword(normEmail, p.current, acc.password_hash);
+                if (!ver.valid) {
+                  App.toast = '目前密碼不正確，無法變更密碼。';
+                  render();
+                  return;
+                }
+              }
+              const newHash = await hashAccountPassword(normEmail, p.next);
+              const { error } = await sb
+                .from('shiftcraft_accounts')
+                .update({ password_hash: newHash })
+                .eq('email', normEmail);
+              if (error) throw error;
             }
-            const newHash = await hashAccountPassword(normEmail, p.next);
-            const { error } = await sb
-              .from('shiftcraft_accounts')
-              .update({ password_hash: newHash })
-              .eq('email', normEmail);
-            if (error) throw error;
           } catch (err) {
             App.toast = '密碼更新失敗，請稍後再試：' + (err.message || err);
             render();
@@ -7005,17 +7277,24 @@ end $$;`;
             </div>
           </div>
 
-          <!-- 右側登入 / 註冊表單 -->
+          <!-- 右側登入 / 註冊 / 忘記密碼表單 -->
           <div class="flex-1 flex items-center justify-center p-6 sm:p-10">
             <div class="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm p-6 sm:p-8 space-y-5 text-xs">
-              <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl font-bold text-xs">
-                <button onclick="App.auth.authMode='LOGIN';App.auth.authError='';render()" class="py-2 rounded-lg cursor-pointer transition ${!isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">業者帳號登入</button>
-                <button onclick="App.auth.authMode='REGISTER';App.auth.authError='';render()" class="py-2 rounded-lg cursor-pointer transition ${isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">免費試用 14 天</button>
-              </div>
+              ${(a.authMode === 'LOGIN' || a.authMode === 'REGISTER') ? `
+                <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl font-bold text-xs">
+                  <button onclick="App.auth.authMode='LOGIN';App.auth.authError='';App.auth.authSuccessMsg='';render()" class="py-2 rounded-lg cursor-pointer transition ${!isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">業者帳號登入</button>
+                  <button onclick="App.auth.authMode='REGISTER';App.auth.authError='';App.auth.authSuccessMsg='';render()" class="py-2 rounded-lg cursor-pointer transition ${isReg?'bg-white text-slate-900 shadow-xs':'text-slate-500'}">免費試用 14 天</button>
+                </div>
+              ` : `
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <span class="font-bold text-slate-700">${a.authMode === 'RESET' ? '🔑 設定新登入密碼' : '📧 重設登入密碼'}</span>
+                  <button type="button" onclick="App.auth.authMode='LOGIN';App.auth.authError='';App.auth.authSuccessMsg='';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">← 返回登入</button>
+                </div>
+              `}
 
               <div>
-                <h1 class="text-lg font-bold text-slate-900">${isReg ? '建立餐飲品牌試用帳號' : '登入班匠營運管理後台'}</h1>
-                <p class="text-slate-500 mt-0.5">${isReg ? '免先扣款，14 天內免費體驗完整功能，到期前隨時可切換月費方案' : '請輸入品牌負責人或店長帳號密碼'}</p>
+                <h1 class="text-lg font-bold text-slate-900">${a.authMode === 'FORGOT' ? '忘記密碼？透過信箱安全重設' : a.authMode === 'RESET' ? '設定您的新高強度密碼' : (isReg ? '建立餐飲品牌試用帳號' : '登入班匠營運管理後台')}</h1>
+                <p class="text-slate-500 mt-0.5">${a.authMode === 'FORGOT' ? '輸入您註冊的企業 Email，系統將寄送一次性安全重設連結至您的信箱' : a.authMode === 'RESET' ? '請設定至少 10 碼且包含英文大小寫與數字的新密碼' : (isReg ? '免先扣款，14 天內免費體驗完整功能，到期前隨時可切換月費方案' : '請輸入品牌負責人或店長帳號密碼')}</p>
               </div>
 
               ${a.authError ? `
@@ -7023,45 +7302,73 @@ end $$;`;
                   ⚠️ ${a.authError}
                 </div>
               ` : ''}
+              ${a.authSuccessMsg ? `
+                <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-emerald-800 font-semibold leading-relaxed">
+                  ${a.authSuccessMsg}
+                </div>
+              ` : ''}
 
               <form onsubmit="submitAuthForm(event)" class="space-y-3.5">
-                ${isReg ? `
-                  <div class="grid grid-cols-3 gap-2.5">
-                    <div class="col-span-2">
-                      <label class="block font-semibold text-slate-700 mb-1">餐飲品牌 / 公司名稱 *</label>
-                      <input value="${a.loginDraft.companyName||''}" oninput="App.auth.loginDraft.companyName=this.value" placeholder="例：森茶餐飲有限公司" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
-                    </div>
-                    <div>
-                      <label class="block font-semibold text-slate-700 mb-1">門市數</label>
-                      <input type="number" min="1" max="50" value="${a.loginDraft.storeCount||1}" oninput="App.auth.loginDraft.storeCount=Number(this.value)||1" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-bold" />
-                    </div>
-                  </div>
-                ` : ''}
-                <div>
-                  <label class="block font-semibold text-slate-700 mb-1">企業 Email 帳號 *</label>
-                  <input type="email" value="${a.loginDraft.email||''}" oninput="App.auth.loginDraft.email=this.value" placeholder="boss@your-brand.tw" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
-                </div>
-                <div>
-                  <div class="flex items-center justify-between mb-1">
-                    <label class="font-semibold text-slate-700">${isReg ? '設定高強度密碼 *' : '密碼 *'}</label>
-                    <div class="flex items-center gap-2.5">
-                      <button type="button" onclick="App.auth.showPassword=!App.auth.showPassword;render()" class="text-slate-500 hover:text-slate-800 font-semibold cursor-pointer">${a.showPassword ? '隱藏密碼' : '顯示密碼'}</button>
-                      ${!isReg ? `<button type="button" onclick="App.toast='如需重設密碼，請聯繫客服 service@shiftcraftai.com 協助處理。';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
-                    </div>
-                  </div>
-                  <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value;${isReg ? "updatePasswordStrengthDom('auth-pw-strength', this.value, App.auth.loginDraft.email)" : ''}" placeholder="${isReg ? '至少 10 碼，須含大小寫英文與數字' : '請輸入帳號密碼'}" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
-                  ${isReg ? `<div id="auth-pw-strength" class="mt-1">${renderPasswordStrengthBarHtml(a.loginDraft.password || '', a.loginDraft.email || '')}</div>` : ''}
-                </div>
-                ${isReg ? `
+                ${a.authMode === 'FORGOT' ? `
                   <div>
-                    <label class="block font-semibold text-slate-700 mb-1">確認密碼 *</label>
-                    <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.confirmPassword||''}" oninput="App.auth.loginDraft.confirmPassword=this.value" placeholder="請再次輸入相同密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    <label class="block font-semibold text-slate-700 mb-1">註冊用企業 Email *</label>
+                    <input type="email" value="${a.loginDraft.email||''}" oninput="App.auth.loginDraft.email=this.value" placeholder="boss@your-brand.tw" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
                   </div>
-                ` : ''}
+                  <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
+                    ${a.authBusy ? '寄送中…' : '寄送密碼重設連結'}
+                  </button>
+                ` : a.authMode === 'RESET' ? `
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">新密碼（至少 10 碼，含大小寫英文與數字）*</label>
+                    <input type="${a.showPassword ? 'text' : 'password'}" value="${(a.resetDraft&&a.resetDraft.password)||''}" oninput="if(!App.auth.resetDraft)App.auth.resetDraft={password:'',confirm:''};App.auth.resetDraft.password=this.value;updatePasswordStrengthDom('reset-pw-strength', this.value, '')" placeholder="例：Tea2026!Shop" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    <div id="reset-pw-strength" class="mt-1">${renderPasswordStrengthBarHtml((a.resetDraft&&a.resetDraft.password)||'', '')}</div>
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">確認新密碼 *</label>
+                    <input type="${a.showPassword ? 'text' : 'password'}" value="${(a.resetDraft&&a.resetDraft.confirm)||''}" oninput="if(!App.auth.resetDraft)App.auth.resetDraft={password:'',confirm:''};App.auth.resetDraft.confirm=this.value" placeholder="請再次輸入相同密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                  </div>
+                  <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
+                    ${a.authBusy ? '更新中…' : '確認重設新密碼'}
+                  </button>
+                ` : `
+                  ${isReg ? `
+                    <div class="grid grid-cols-3 gap-2.5">
+                      <div class="col-span-2">
+                        <label class="block font-semibold text-slate-700 mb-1">餐飲品牌 / 公司名稱 *</label>
+                        <input value="${a.loginDraft.companyName||''}" oninput="App.auth.loginDraft.companyName=this.value" placeholder="例：森茶餐飲有限公司" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                      </div>
+                      <div>
+                        <label class="block font-semibold text-slate-700 mb-1">門市數</label>
+                        <input type="number" min="1" max="50" value="${a.loginDraft.storeCount||1}" oninput="App.auth.loginDraft.storeCount=Number(this.value)||1" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-bold" />
+                      </div>
+                    </div>
+                  ` : ''}
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">企業 Email 帳號 *</label>
+                    <input type="email" value="${a.loginDraft.email||''}" oninput="App.auth.loginDraft.email=this.value" placeholder="boss@your-brand.tw" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" />
+                  </div>
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <label class="font-semibold text-slate-700">${isReg ? '設定高強度密碼 *' : '密碼 *'}</label>
+                      <div class="flex items-center gap-2.5">
+                        <button type="button" onclick="App.auth.showPassword=!App.auth.showPassword;render()" class="text-slate-500 hover:text-slate-800 font-semibold cursor-pointer">${a.showPassword ? '隱藏密碼' : '顯示密碼'}</button>
+                        ${!isReg ? `<button type="button" onclick="App.auth.authMode='FORGOT';App.auth.authError='';App.auth.authSuccessMsg='';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
+                      </div>
+                    </div>
+                    <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value;${isReg ? "updatePasswordStrengthDom('auth-pw-strength', this.value, App.auth.loginDraft.email)" : ''}" placeholder="${isReg ? '至少 10 碼，須含大小寫英文與數字' : '請輸入帳號密碼'}" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    ${isReg ? `<div id="auth-pw-strength" class="mt-1">${renderPasswordStrengthBarHtml(a.loginDraft.password || '', a.loginDraft.email || '')}</div>` : ''}
+                  </div>
+                  ${isReg ? `
+                    <div>
+                      <label class="block font-semibold text-slate-700 mb-1">確認密碼 *</label>
+                      <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.confirmPassword||''}" oninput="App.auth.loginDraft.confirmPassword=this.value" placeholder="請再次輸入相同密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    </div>
+                  ` : ''}
 
-                <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
-                  ${a.authBusy ? '連線處理中…' : (isReg ? '立即開通 14 天免費試用' : '登入營運管理後台')}
-                </button>
+                  <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
+                    ${a.authBusy ? '連線處理中…' : (isReg ? '立即開通 14 天免費試用' : '登入營運管理後台')}
+                  </button>
+                `}
                 <div class="text-[10px] text-slate-400 text-center">
                   🔒 採用企業級加密保護與異常登入防護，守護門市營運與員工個資安全
                 </div>
