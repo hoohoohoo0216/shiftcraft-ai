@@ -2898,6 +2898,14 @@ end $$;`;
               label: workedHours > 0 ? '外籍無投票權・正常計薪' : '外籍無投票權',
             };
           }
+          if (emp.isBackOfficeFixed) {
+            return {
+              holiday: h,
+              status: 'HOLIDAY_OFF',
+              hours: 0,
+              label: h.kind === '選舉日' ? '後勤固定制（依法放假）' : '後勤固定制（依政府行事曆）',
+            };
+          }
           if (workedHours > 0) {
             return {
               holiday: h,
@@ -2909,7 +2917,11 @@ end $$;`;
           if (emp.type === 'PT') {
             return { holiday: h, status: 'PT_OFF', hours: 0, label: isStoreClosed ? '店休未出勤' : '未排班' };
           }
-          // 正職 FT 當日未出勤：區分「國定假日放假」vs「撞門市公休／例假／休息日須補假」
+          // 依勞動部函釋：選舉投票日遇休息日或例假日，原即無須出勤，依法「不另予補假」
+          if (h.kind === '選舉日') {
+            return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '選舉日未出勤（不另補假）' };
+          }
+          // 正職 FT 國定假日未出勤：區分「國定假日放假」vs「撞門市公休／例假／休息日須補假」
           if (sh && sh.shiftCode === 'OFF_HOLIDAY') {
             return { holiday: h, status: 'HOLIDAY_OFF', hours: 0, label: '國定假日放假' };
           }
