@@ -568,6 +568,8 @@
         filterStatus: 'ALL',
         filterDateFrom: '',
         filterDateTo: '',
+        draftDateFrom: '',
+        draftDateTo: '',
         searchDate: '',
         draft: { date: '2026-11-21', type: 'MISSING_OUT', reqIn: '08:30', reqOut: '17:05', witnessId: 'emp-01', reason: '' },
         logs: [
@@ -3071,27 +3073,42 @@ end $$;`;
       });
     }
 
+    function applyAttendanceDateFilter() {
+      let from = (App.attendance.draftDateFrom || '').trim();
+      let to = (App.attendance.draftDateTo || '').trim();
+      if (from && to && from > to) {
+        const tmp = from; from = to; to = tmp;
+        App.attendance.draftDateFrom = from;
+        App.attendance.draftDateTo = to;
+      }
+      App.attendance.filterDateFrom = from;
+      App.attendance.filterDateTo = to;
+      render();
+    }
+
     function setAttendanceDatePreset(preset) {
       const now = new Date();
       const pad = (n) => String(n).padStart(2, '0');
       const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      if (preset === 'ALL') {
-        App.attendance.filterDateFrom = '';
-        App.attendance.filterDateTo = '';
-      } else if (preset === 'LAST_7') {
+      let from = '', to = '';
+      if (preset === 'LAST_7') {
         const start = new Date(now);
         start.setDate(start.getDate() - 6);
-        App.attendance.filterDateFrom = fmt(start);
-        App.attendance.filterDateTo = fmt(now);
+        from = fmt(start);
+        to = fmt(now);
       } else if (preset === 'THIS_MONTH') {
         const y = now.getFullYear(), m = now.getMonth();
-        App.attendance.filterDateFrom = fmt(new Date(y, m, 1));
-        App.attendance.filterDateTo = fmt(new Date(y, m + 1, 0));
+        from = fmt(new Date(y, m, 1));
+        to = fmt(new Date(y, m + 1, 0));
       } else if (preset === 'PREV_MONTH') {
         const y = now.getFullYear(), m = now.getMonth() - 1;
-        App.attendance.filterDateFrom = fmt(new Date(y, m, 1));
-        App.attendance.filterDateTo = fmt(new Date(y, m + 1, 0));
+        from = fmt(new Date(y, m, 1));
+        to = fmt(new Date(y, m + 1, 0));
       }
+      App.attendance.draftDateFrom = from;
+      App.attendance.draftDateTo = to;
+      App.attendance.filterDateFrom = from;
+      App.attendance.filterDateTo = to;
       render();
     }
 
@@ -5196,14 +5213,15 @@ end $$;`;
               </div>
               <div class="flex flex-wrap items-center gap-2 text-xs">
                 <span class="text-slate-500 font-semibold">日期區間：</span>
-                <input type="date" value="${a.filterDateFrom||''}" onchange="App.attendance.filterDateFrom=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                <input type="date" value="${a.draftDateFrom !== undefined ? a.draftDateFrom : (a.filterDateFrom||'')}" onchange="App.attendance.draftDateFrom=this.value" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
                 <span class="text-slate-400">~</span>
-                <input type="date" value="${a.filterDateTo||''}" onchange="App.attendance.filterDateTo=this.value;render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                <input type="date" value="${a.draftDateTo !== undefined ? a.draftDateTo : (a.filterDateTo||'')}" onchange="App.attendance.draftDateTo=this.value" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                <button type="button" onclick="applyAttendanceDateFilter()" class="h-8 px-3.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">確認</button>
                 <div class="inline-flex items-center gap-1 flex-wrap">
                   <button type="button" onclick="setAttendanceDatePreset('LAST_7')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">近 7 天</button>
                   <button type="button" onclick="setAttendanceDatePreset('THIS_MONTH')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">本月</button>
                   <button type="button" onclick="setAttendanceDatePreset('PREV_MONTH')" class="h-7 px-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer">上月</button>
-                  ${(a.filterDateFrom || a.filterDateTo) ? `<button type="button" onclick="setAttendanceDatePreset('ALL')" class="h-7 px-2.5 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold cursor-pointer">清除日期</button>` : ''}
+                  ${(a.filterDateFrom || a.filterDateTo || a.draftDateFrom || a.draftDateTo) ? `<button type="button" onclick="setAttendanceDatePreset('ALL')" class="h-7 px-2.5 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold cursor-pointer">清除日期</button>` : ''}
                 </div>
               </div>
             </div>
