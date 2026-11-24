@@ -3185,6 +3185,141 @@ end $$;`;
       render();
     }
 
+    function printPayrollRoster() {
+      const mk = App.payroll.monthKey;
+      const monthMeta = PAYROLL_MONTHS.find(m => m.key === mk) || { key: mk, label: mk };
+      const slips = (App.employees || []).map(e => calcPayslip(e, ensurePayrollAtt(mk, e), mk));
+      if (!slips.length) {
+        App.toast = '目前沒有員工薪資資料可供列印。';
+        render();
+        return;
+      }
+      const sum = (fn) => slips.reduce((acc, s) => acc + fn(s), 0);
+      const totBase = sum(s => s.basePay);
+      const totAllow = sum(s => s.allowTotal);
+      const totOtHol = sum(s => s.otPay + s.holidayPay);
+      const totBonus = sum(s => s.bonusAndExtra || 0);
+      const totGross = sum(s => s.grossPay);
+      const totLabor = sum(s => s.laborEmp);
+      const totNhi = sum(s => s.nhiEmp);
+      const totOtherDed = sum(s => s.leaveDeduct + s.taxWithhold + s.volPenAmt + (s.extraDeduct || 0));
+      const totNet = sum(s => s.netPay);
+      const totEmpCost = sum(s => s.employerCost);
+      const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
+      const taxId = (App.storeSettings && App.storeSettings.taxId) || '';
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      const w = window.open('', '_blank', 'width=1120,height=780');
+      if (!w) {
+        App.toast = '請允許瀏覽器彈出視窗以列印薪資清冊。';
+        render();
+        return;
+      }
+      w.document.write(`<!DOCTYPE html><html lang="zh-Hant-TW"><head><meta charset="UTF-8"><title>${storeName} ${monthMeta.label} 薪資清冊</title>
+        <style>
+          @page { size: A4 landscape; margin: 12mm; }
+          body { margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Noto Sans TC", "Microsoft JhengHei", sans-serif; color: #0f172a; font-size: 11px; }
+          .head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #0F766E; padding-bottom: 10px; margin-bottom: 14px; }
+          .title { font-size: 18px; font-weight: 800; color: #0f172a; }
+          .sub { font-size: 11px; color: #475569; margin-top: 3px; }
+          .meta { text-align: right; font-size: 11px; color: #475569; line-height: 1.6; }
+          table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+          th, td { border: 1px solid #cbd5e1; padding: 6px 6px; }
+          th { background: #f1f5f9; font-weight: 700; color: #334155; text-align: center; white-space: nowrap; }
+          td.num { text-align: right; white-space: nowrap; }
+          td.ctr { text-align: center; white-space: nowrap; }
+          tfoot td { background: #f0fdfa; font-weight: 800; color: #0f172a; border-top: 2px solid #0F766E; }
+          .net { color: #0F766E; font-weight: 800; }
+          .ded { color: #be123c; }
+          .summary { margin-top: 12px; display: flex; justify-content: space-between; font-size: 11px; color: #334155; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; }
+          .signs { margin-top: 28px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; font-size: 12px; }
+          .sign-box { border-bottom: 1px solid #64748b; padding-bottom: 26px; font-weight: 600; color: #334155; }
+          .no-print { margin-bottom: 12px; text-align: right; }
+          .btn { background: #0F766E; color: #fff; border: none; padding: 7px 14px; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 12px; }
+          @media print { .no-print { display: none; } body { padding: 0; } }
+        </style></head><body>
+        <div class="no-print"><button class="btn" onclick="window.print()">🖨️ 立即列印 / 另存 PDF</button></div>
+        <div class="head">
+          <div>
+            <div class="title">${storeName}・${monthMeta.label} 員工薪資清冊</div>
+            <div class="sub">依台灣勞動基準法第 23 條製表${taxId ? ` · 統一編號：${taxId}` : ''}</div>
+          </div>
+          <div class="meta">
+            <div>結算人數：<strong>${slips.length} 人</strong></div>
+            <div>列印日期：${todayStr}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>編號</th>
+              <th>姓名</th>
+              <th>聘僱</th>
+              <th>本薪 / 工時</th>
+              <th>津貼＋全勤</th>
+              <th>加班＋假日</th>
+              <th>獎金 / 加發</th>
+              <th>應發總額</th>
+              <th>勞保自付</th>
+              <th>健保自付</th>
+              <th>請假/遲到/其他扣</th>
+              <th>實發淨額</th>
+              <th>薪轉帳號</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${slips.map(s => {
+              const otherDed = s.leaveDeduct + s.taxWithhold + s.volPenAmt + (s.extraDeduct || 0);
+              return `
+                <tr>
+                  <td class="ctr">${s.emp.code || '—'}</td>
+                  <td><strong>${s.emp.name}</strong></td>
+                  <td class="ctr">${s.emp.type}</td>
+                  <td class="num">$${s.basePay.toLocaleString()}</td>
+                  <td class="num">$${s.allowTotal.toLocaleString()}</td>
+                  <td class="num">$${(s.otPay + s.holidayPay).toLocaleString()}</td>
+                  <td class="num">$${(s.bonusAndExtra || 0).toLocaleString()}</td>
+                  <td class="num"><strong>$${s.grossPay.toLocaleString()}</strong></td>
+                  <td class="num ded">-$${s.laborEmp.toLocaleString()}</td>
+                  <td class="num ded">-$${s.nhiEmp.toLocaleString()}</td>
+                  <td class="num ded">${otherDed > 0 ? `-$${otherDed.toLocaleString()}` : '$0'}</td>
+                  <td class="num net">NT$${s.netPay.toLocaleString()}</td>
+                  <td>${s.emp.bankCode || ''} ${s.emp.accountNumber || '未填'}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3" class="ctr">全店合計（${slips.length} 人）</td>
+              <td class="num">$${totBase.toLocaleString()}</td>
+              <td class="num">$${totAllow.toLocaleString()}</td>
+              <td class="num">$${totOtHol.toLocaleString()}</td>
+              <td class="num">$${totBonus.toLocaleString()}</td>
+              <td class="num">$${totGross.toLocaleString()}</td>
+              <td class="num ded">-$${totLabor.toLocaleString()}</td>
+              <td class="num ded">-$${totNhi.toLocaleString()}</td>
+              <td class="num ded">-$${totOtherDed.toLocaleString()}</td>
+              <td class="num net">NT$${totNet.toLocaleString()}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        <div class="summary">
+          <span><strong>全店應發薪資總額：</strong>NT$${totGross.toLocaleString()}</span>
+          <span><strong>全店實發入帳總額：</strong>NT$${totNet.toLocaleString()}</span>
+          <span><strong>雇主總人事成本（含勞退 6% 及雇主勞健保）：</strong>NT$${totEmpCost.toLocaleString()}</span>
+        </div>
+        <div class="signs">
+          <div class="sign-box">製表 / 人資簽章：</div>
+          <div class="sign-box">店長 / 主管複核：</div>
+          <div class="sign-box">負責人核准：</div>
+        </div>
+        <script>window.onload = function(){ setTimeout(function(){ window.print(); }, 250); };<\/script>
+      </body></html>`);
+      w.document.close();
+    }
+
     const BANK_PAYROLL_FORMATS = [
       { code: 'GENERIC', short: '通用企業網銀', label: '通用企業網銀薪轉格式 (全銀行適用)' },
       { code: 'CTBC', short: '中國信託 822', label: '中國信託 e-Cash 整批薪轉 (822)' },
@@ -3207,9 +3342,8 @@ end $$;`;
 
     function getPayrollBankRows(monthKey) {
       const mk = monthKey || App.payroll.monthKey;
-      const attMap = App.payroll.attByMonth[mk] || {};
       return App.employees.map((e, idx) => {
-        const slip = calcPayslip(e, attMap[e.id] || { regH: 100, ot1: 0, ot2: 0, rest1: 0, rest2: 0, holidaysWorked: [], holidayHoursPT: 0, sickH: 0, personalH: 0, lateM: 0, bonus: 0 }, mk);
+        const slip = calcPayslip(e, ensurePayrollAtt(mk, e), mk);
         const bankCode = String(e.bankCode || '').trim();
         const bankName = String(e.bankName || (TAIWAN_BANKS.find(b => b.code === bankCode)?.name || '')).trim();
         const accountNumber = String(e.accountNumber || '').replace(/[\s-]/g, '').trim();
@@ -4909,7 +5043,8 @@ end $$;`;
               ` : ''}
             </div>
             <div class="flex flex-wrap gap-2">
-              <button onclick="window.print()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">${ICONS.printer} 列印</button>
+              <button onclick="window.print()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold cursor-pointer">${ICONS.printer} 列印個人薪資單</button>
+              <button onclick="printPayrollRoster()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-semibold cursor-pointer">${ICONS.printer} 列印薪資清冊</button>
               <button onclick="App.payroll.showBankExportBar=!App.payroll.showBankExportBar;render()" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg ${App.payroll.showBankExportBar ? 'bg-[#0F766E] text-white' : 'bg-slate-900 text-white hover:bg-slate-800'} font-semibold cursor-pointer">${ICONS.download} 輸出銀行薪轉 CSV</button>
               <button onclick="App.employees.forEach(e=>App.payroll.dispatched[App.payroll.monthKey+'_'+e.id]=true);App.payroll.viewMode='LINE_LIFF';App.toast='已發送全體 LINE 電子薪資條。';render()" class="h-8 px-3.5 rounded-lg bg-[#06C755] text-white font-semibold cursor-pointer">發送全體 LINE 薪資條</button>
             </div>
