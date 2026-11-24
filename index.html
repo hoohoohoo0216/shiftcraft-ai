@@ -709,8 +709,11 @@
         paidUntil: null,
         twoFactorEnabled: false,
         lineAdminBound: false,
+        showPassword: false,
+        weakPasswordWarning: false,
+        idleTimeoutMinutes: 60,
         lastLoginAt: '',
-        loginDraft: { email: '', password: '', companyName: '', storeCount: 1 },
+        loginDraft: { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 },
         pwdDraft: { current: '', next: '', confirm: '' },
         sessions: [
           { id: 'sess-1', device: '目前瀏覽器連線', location: '台灣', lastActive: '目前使用中', current: true },
@@ -795,20 +798,180 @@
     }
 
     const AUTH_SESSION_KEY = 'shiftcraft_auth_session_v1';
+    const LOGIN_GUARD_KEY = 'shiftcraft_login_guard_v1';
+    const COMMON_WEAK_PASSWORDS = new Set([
+      '1234567890', '0123456789', 'password123', 'password1234', 'qwerty1234',
+      'admin12345', 'welcome123', 'abc1234567', 'shiftcraft1', 'shiftcraft123',
+      'a123456789', 'aa12345678', '1qaz2wsx3edc',
+    ]);
 
-    async function hashAccountPassword(email, password) {
+    function evaluatePasswordStrength(password, email) {
+      const pw = String(password || '');
+      const lower = pw.toLowerCase();
+      const emailPrefix = String(email || '').trim().toLowerCase().split('@')[0] || '';
+      const hasLen = pw.length >= 10;
+      const hasUpper = /[A-Z]/.test(pw);
+      const hasLower = /[a-z]/.test(pw);
+      const hasDigit = /\d/.test(pw);
+      const hasSymbol = /[^A-Za-z0-9]/.test(pw);
+      const isCommon = COMMON_WEAK_PASSWORDS.has(lower) || (emailPrefix.length >= 4 && lower.includes(emailPrefix));
+      const errors = [];
+      if (!hasLen) errors.push('長度至少需 10 碼');
+      if (!hasUpper) errors.push('須包含英文大寫 (A–Z)');
+      if (!hasLower) errors.push('須包含英文小寫 (a–z)');
+      if (!hasDigit) errors.push('須包含數字 (0–9)');
+      if (isCommon) errors.push('不可使用常見弱密碼或帳號名稱');
+      let score = 0;
+      if (hasLen) score++;
+      if (hasUpper && hasLower) score++;
+      if (hasDigit) score++;
+      if (hasSymbol || pw.length >= 14) score++;
+      if (isCommon) score = Math.min(score, 1);
+      const ok = hasLen && hasUpper && hasLower && hasDigit && !isCommon;
+      const label = score >= 4 ? '高強度' : score === 3 ? '良好' : score === 2 ? '尚可' : '過弱';
+      const barCls = score >= 4 ? 'bg-emerald-600' : score === 3 ? 'bg-teal-600' : score === 2 ? 'bg-amber-500' : 'bg-rose-500';
+      const textCls = score >= 4 ? 'text-emerald-700' : score === 3 ? 'text-teal-700' : score === 2 ? 'text-amber-700' : 'text-rose-600';
+      return { ok, score, label, barCls, textCls, errors, checks: { hasLen, hasUpper, hasLower, hasDigit, hasSymbol, notCommon: !isCommon } };
+    }
+
+    function renderPasswordStrengthBarHtml(password, email) {
+      if (!password) return `<div class="text-[10px] text-slate-400">安全要求：至少 10 碼，並同時包含英文大寫、英文小寫與數字</div>`;
+      const st = evaluatePasswordStrength(password, email);
+      const pill = (ok, txt) => `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${ok ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}">${ok ? '✓' : '○'} ${txt}</span>`;
+      return `
+        <div class="space-y-1.5 pt-1">
+          <div class="flex items-center gap-2">
+            <div class="flex-1 grid grid-cols-4 gap-1 h-1.5">
+              ${[1, 2, 3, 4].map(i => `<div class="rounded-full ${i <= st.score ? st.barCls : 'bg-slate-200'}"></div>`).join('')}
+            </div>
+            <span class="text-[10px] font-bold ${st.textCls}">強度：${st.label}</span>
+          </div>
+          <div class="flex flex-wrap gap-1">
+            ${pill(st.checks.hasLen, '10 碼以上')}
+            ${pill(st.checks.hasUpper, '英文大寫')}
+            ${pill(st.checks.hasLower, '英文小寫')}
+            ${pill(st.checks.hasDigit, '數字')}
+            ${pill(st.checks.notCommon, '非弱密碼')}
+          </div>
+        </div>
+      `;
+    }
+
+    function updatePasswordStrengthDom(boxId, password, email) {
+      const el = document.getElementById(boxId);
+      if (el) el.innerHTML = renderPasswordStrengthBarHtml(password, email);
+    }
+
+    function _bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    function _hexToBytes(hex) {
+      const out = new Uint8Array(Math.floor(hex.length / 2));
+      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) || 0;
+      return out;
+    }
+
+    async function hashAccountPasswordLegacy(email, password) {
       const normalized = `shiftcraft-v1:${String(email || '').trim().toLowerCase()}:${String(password || '')}`;
       if (window.crypto && window.crypto.subtle) {
         const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
-        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        return _bytesToHex(new Uint8Array(buf));
       }
-      // Fallback hash if crypto.subtle unavailable
       let h = 2166136261;
       for (let i = 0; i < normalized.length; i++) {
         h ^= normalized.charCodeAt(i);
         h = Math.imul(h, 16777619);
       }
       return 'fb-' + (h >>> 0).toString(16);
+    }
+
+    async function hashAccountPassword(email, password, customSaltHex, customIterations) {
+      const iterations = customIterations || 100000;
+      if (window.crypto && window.crypto.subtle && typeof window.crypto.subtle.importKey === 'function') {
+        const saltBytes = customSaltHex
+          ? _hexToBytes(customSaltHex)
+          : window.crypto.getRandomValues(new Uint8Array(16));
+        const saltHex = customSaltHex || _bytesToHex(saltBytes);
+        const keyMaterial = await window.crypto.subtle.importKey(
+          'raw',
+          new TextEncoder().encode(String(password || '')),
+          { name: 'PBKDF2' },
+          false,
+          ['deriveBits']
+        );
+        const derived = await window.crypto.subtle.deriveBits(
+          { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
+          keyMaterial,
+          256
+        );
+        return `pbkdf2$${iterations}$${saltHex}$${_bytesToHex(new Uint8Array(derived))}`;
+      }
+      return hashAccountPasswordLegacy(email, password);
+    }
+
+    async function verifyAccountPassword(email, password, storedHash) {
+      const stored = String(storedHash || '');
+      if (stored.startsWith('pbkdf2$')) {
+        const parts = stored.split('$');
+        if (parts.length !== 4) return { valid: false, needsUpgrade: false };
+        const iter = Math.max(10000, Number(parts[1]) || 100000);
+        const saltHex = parts[2];
+        const computed = await hashAccountPassword(email, password, saltHex, iter);
+        return { valid: computed === stored, needsUpgrade: false };
+      }
+      const legacy = await hashAccountPasswordLegacy(email, password);
+      return { valid: legacy === stored, needsUpgrade: true };
+    }
+
+    function _readLoginGuardMap() {
+      try { return JSON.parse(localStorage.getItem(LOGIN_GUARD_KEY) || '{}') || {}; } catch (e) { return {}; }
+    }
+    function _writeLoginGuardMap(map) {
+      try { localStorage.setItem(LOGIN_GUARD_KEY, JSON.stringify(map)); } catch (e) {}
+    }
+    function getLoginLockoutInfo(email) {
+      const key = String(email || '').trim().toLowerCase();
+      if (!key) return { locked: false, remainMins: 0, failCount: 0 };
+      const rec = _readLoginGuardMap()[key];
+      if (!rec) return { locked: false, remainMins: 0, failCount: 0 };
+      const now = Date.now();
+      if (rec.lockedUntil && rec.lockedUntil > now) {
+        return { locked: true, remainMins: Math.max(1, Math.ceil((rec.lockedUntil - now) / 60000)), failCount: rec.failCount || 5 };
+      }
+      return { locked: false, remainMins: 0, failCount: rec.failCount || 0 };
+    }
+    function recordLoginFailure(email) {
+      const key = String(email || '').trim().toLowerCase();
+      if (!key) return { locked: false, remainMins: 0, failCount: 1 };
+      const map = _readLoginGuardMap();
+      const prev = map[key] || { failCount: 0, lockedUntil: 0 };
+      const failCount = (prev.lockedUntil && prev.lockedUntil <= Date.now()) ? 1 : (prev.failCount || 0) + 1;
+      const lockedUntil = failCount >= 5 ? (Date.now() + 15 * 60 * 1000) : 0;
+      map[key] = { failCount, lockedUntil };
+      _writeLoginGuardMap(map);
+      return { locked: lockedUntil > 0, remainMins: lockedUntil > 0 ? 15 : 0, failCount };
+    }
+    function clearLoginFailures(email) {
+      const key = String(email || '').trim().toLowerCase();
+      if (!key) return;
+      const map = _readLoginGuardMap();
+      if (map[key]) { delete map[key]; _writeLoginGuardMap(map); }
+    }
+
+    let _lastUserActivityAt = Date.now();
+    let _idleGuardInitialized = false;
+    function initIdleAutoLogoutGuard() {
+      if (_idleGuardInitialized || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+      _idleGuardInitialized = true;
+      const touch = () => { _lastUserActivityAt = Date.now(); };
+      ['click', 'keydown', 'pointerdown'].forEach(evt => window.addEventListener(evt, touch, { passive: true }));
+      setInterval(() => {
+        if (!App.auth.loggedIn || App.auth.isDemo || App.liffDrawerOpen) return;
+        const limitMins = Math.max(15, Number(App.auth.idleTimeoutMinutes) || 60);
+        if (Date.now() - _lastUserActivityAt >= limitMins * 60 * 1000) {
+          logoutToAuthScreen(`為保護門市薪資與員工個資安全，系統閒置超過 ${limitMins} 分鐘已自動登出，請重新登入。`);
+        }
+      }, 60000);
     }
 
     function getAccountSupabaseClient() {
@@ -1115,15 +1278,35 @@
         render();
         return;
       }
-      if (password.length < 6) {
-        App.auth.authError = '密碼長度至少需要 6 碼。';
-        render();
-        return;
-      }
-      if (isRegister && !(d.companyName || '').trim()) {
-        App.auth.authError = '請輸入餐飲品牌或門市名稱。';
-        render();
-        return;
+      if (isRegister) {
+        const pwCheck = evaluatePasswordStrength(password, email);
+        if (!pwCheck.ok) {
+          App.auth.authError = '密碼強度不足：' + pwCheck.errors.join('、') + '。';
+          render();
+          return;
+        }
+        if (password !== String(d.confirmPassword || '')) {
+          App.auth.authError = '兩次輸入的密碼不一致，請重新確認。';
+          render();
+          return;
+        }
+        if (!(d.companyName || '').trim()) {
+          App.auth.authError = '請輸入餐飲品牌或門市名稱。';
+          render();
+          return;
+        }
+      } else {
+        if (!password) {
+          App.auth.authError = '請輸入登入密碼。';
+          render();
+          return;
+        }
+        const lock = getLoginLockoutInfo(email);
+        if (lock.locked) {
+          App.auth.authError = `此帳號連續密碼錯誤達 5 次，為防止暴力破解已暫時鎖定，請於 ${lock.remainMins} 分鐘後再試。`;
+          render();
+          return;
+        }
       }
 
       const sb = getAccountSupabaseClient();
@@ -1138,8 +1321,8 @@
       render();
 
       try {
-        const pwHash = await hashAccountPassword(email, password);
         if (isRegister) {
+          const pwHash = await hashAccountPassword(email, password);
           const { data: existing, error: checkErr } = await sb
             .from('shiftcraft_accounts')
             .select('email')
@@ -1179,9 +1362,10 @@
           resetWorkspaceForNewBrand(brandName, storeCnt, email);
 
           applyAccountRecord(newAcc);
+          App.auth.weakPasswordWarning = false;
           App.mainTab = 'HR';
           App.auth.authBusy = false;
-          App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+          App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
           App.toast = `🎉 歡迎加入班匠！「${brandName}」全新空白門市空間已建立，14 天免費試用啟動（到期日 ${formatIsoDateTW(trialEndsAt)}），請先新增您的第一位員工！`;
           render();
           await initCloudSync(false);
@@ -1202,17 +1386,29 @@
             render();
             return;
           }
-          if (acc.password_hash !== pwHash) {
+          const verifyRes = await verifyAccountPassword(email, password, acc.password_hash);
+          if (!verifyRes.valid) {
+            const failInfo = recordLoginFailure(email);
             App.auth.authBusy = false;
-            App.auth.authError = '密碼不正確，請重新輸入。';
+            App.auth.authError = failInfo.locked
+              ? `密碼連續錯誤 5 次，為防止暴力破解已鎖定 ${failInfo.remainMins} 分鐘。`
+              : `密碼不正確，請重新輸入（剩餘 ${Math.max(0, 5 - failInfo.failCount)} 次機會）。`;
             render();
             return;
           }
 
+          clearLoginFailures(email);
+          _lastUserActivityAt = Date.now();
+          const updatePayload = { last_login_at: new Date().toISOString() };
+          if (verifyRes.needsUpgrade) {
+            // 無痛自動升級為 PBKDF2 10 萬次加鹽雜湊
+            updatePayload.password_hash = await hashAccountPassword(email, password);
+          }
           await sb
             .from('shiftcraft_accounts')
-            .update({ last_login_at: new Date().toISOString() })
+            .update(updatePayload)
             .eq('email', email);
+          App.auth.weakPasswordWarning = !evaluatePasswordStrength(password, email).ok;
 
           applyAccountRecord(acc);
           App.auth.authBusy = false;
@@ -2002,31 +2198,53 @@ end $$;`;
       `;
     }
 
-    function logoutToAuthScreen() {
+    function logoutToAuthScreen(customMsg) {
       App.auth.loggedIn = false;
       App.auth.isDemo = false;
       App.auth.authMode = 'LOGIN';
       App.auth.authError = '';
-      App.auth.loginDraft = { email: '', password: '', companyName: '', storeCount: 1 };
+      App.auth.weakPasswordWarning = false;
+      App.auth.loginDraft = { email: '', password: '', confirmPassword: '', companyName: '', storeCount: 1 };
       try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
-      App.toast = '已安全登出系統。';
+      App.toast = customMsg || '已安全登出系統。';
       render();
     }
 
     async function updateAccountPassword(e) {
       e.preventDefault();
       const p = App.auth.pwdDraft;
-      if (!p.next || p.next.length < 6) { App.toast = '新密碼長度至少須 6 碼。'; render(); return; }
+      const pwCheck = evaluatePasswordStrength(p.next, App.auth.email);
+      if (!pwCheck.ok) {
+        App.toast = '新密碼強度不足：' + pwCheck.errors.join('、') + '。';
+        render();
+        return;
+      }
       if (p.next !== p.confirm) { App.toast = '兩次輸入的新密碼不一致，請重新確認。'; render(); return; }
       if (!App.auth.isDemo && App.auth.email) {
+        if (!p.current) { App.toast = '請先輸入「目前密碼」以驗證身分。'; render(); return; }
         const sb = getAccountSupabaseClient();
         if (sb) {
           try {
-            const newHash = await hashAccountPassword(App.auth.email, p.next);
+            const normEmail = App.auth.email.trim().toLowerCase();
+            const { data: acc, error: selErr } = await sb
+              .from('shiftcraft_accounts')
+              .select('password_hash')
+              .eq('email', normEmail)
+              .maybeSingle();
+            if (selErr) throw selErr;
+            if (acc && acc.password_hash) {
+              const ver = await verifyAccountPassword(normEmail, p.current, acc.password_hash);
+              if (!ver.valid) {
+                App.toast = '目前密碼不正確，無法變更密碼。';
+                render();
+                return;
+              }
+            }
+            const newHash = await hashAccountPassword(normEmail, p.next);
             const { error } = await sb
               .from('shiftcraft_accounts')
               .update({ password_hash: newHash })
-              .eq('email', App.auth.email.trim().toLowerCase());
+              .eq('email', normEmail);
             if (error) throw error;
           } catch (err) {
             App.toast = '密碼更新失敗，請稍後再試：' + (err.message || err);
@@ -2035,8 +2253,9 @@ end $$;`;
           }
         }
       }
+      App.auth.weakPasswordWarning = false;
       App.auth.pwdDraft = { current: '', next: '', confirm: '' };
-      App.toast = '帳號密碼已更新，下次登入請使用新密碼。';
+      App.toast = '✅ 已升級為高強度加密密碼（PBKDF2 10 萬次加鹽雜湊），下次登入請使用新密碼。';
       render();
     }
 
@@ -6824,15 +7043,28 @@ end $$;`;
                 </div>
                 <div>
                   <div class="flex items-center justify-between mb-1">
-                    <label class="font-semibold text-slate-700">密碼 *</label>
-                    ${!isReg ? `<button type="button" onclick="App.toast='如需重設密碼，請聯繫客服 service@shiftcraftai.com 協助處理。';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
+                    <label class="font-semibold text-slate-700">${isReg ? '設定高強度密碼 *' : '密碼 *'}</label>
+                    <div class="flex items-center gap-2.5">
+                      <button type="button" onclick="App.auth.showPassword=!App.auth.showPassword;render()" class="text-slate-500 hover:text-slate-800 font-semibold cursor-pointer">${a.showPassword ? '隱藏密碼' : '顯示密碼'}</button>
+                      ${!isReg ? `<button type="button" onclick="App.toast='如需重設密碼，請聯繫客服 service@shiftcraftai.com 協助處理。';render()" class="text-[#0F766E] hover:underline font-semibold cursor-pointer">忘記密碼？</button>` : ''}
+                    </div>
                   </div>
-                  <input type="password" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value" placeholder="請輸入至少 6 碼密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                  <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.password||''}" oninput="App.auth.loginDraft.password=this.value;${isReg ? "updatePasswordStrengthDom('auth-pw-strength', this.value, App.auth.loginDraft.email)" : ''}" placeholder="${isReg ? '至少 10 碼，須含大小寫英文與數字' : '請輸入帳號密碼'}" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                  ${isReg ? `<div id="auth-pw-strength" class="mt-1">${renderPasswordStrengthBarHtml(a.loginDraft.password || '', a.loginDraft.email || '')}</div>` : ''}
                 </div>
+                ${isReg ? `
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">確認密碼 *</label>
+                    <input type="${a.showPassword ? 'text' : 'password'}" value="${a.loginDraft.confirmPassword||''}" oninput="App.auth.loginDraft.confirmPassword=this.value" placeholder="請再次輸入相同密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                  </div>
+                ` : ''}
 
                 <button type="submit" ${a.authBusy ? 'disabled' : ''} class="w-full h-10 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-60 text-white font-bold text-xs cursor-pointer shadow-xs">
                   ${a.authBusy ? '連線處理中…' : (isReg ? '立即開通 14 天免費試用' : '登入營運管理後台')}
                 </button>
+                <div class="text-[10px] text-slate-400 text-center">
+                  🔒 PBKDF2 10 萬次加鹽加密 · 輸錯 5 次自動鎖定 15 分鐘 · 閒置自動登出保護
+                </div>
               </form>
 
               <div class="rounded-lg bg-slate-50 border border-slate-200/80 p-3 text-[11px] text-slate-600 flex items-center justify-between">
@@ -6938,15 +7170,42 @@ end $$;`;
               </section>
 
               <section class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4">
-                <h3 class="text-sm font-bold text-slate-900 border-b border-slate-100 pb-3">變更登入密碼</h3>
-                <form onsubmit="updateAccountPassword(event)" class="space-y-3">
-                  <div><label class="block font-semibold text-slate-600 mb-1">目前密碼</label><input type="password" value="${a.pwdDraft.current}" oninput="App.auth.pwdDraft.current=this.value" placeholder="••••••••" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div><label class="block font-semibold text-slate-600 mb-1">新密碼（至少 6 碼）</label><input type="password" value="${a.pwdDraft.next}" oninput="App.auth.pwdDraft.next=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
-                    <div><label class="block font-semibold text-slate-600 mb-1">確認新密碼</label><input type="password" value="${a.pwdDraft.confirm}" oninput="App.auth.pwdDraft.confirm=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 class="text-sm font-bold text-slate-900">變更登入密碼與帳號安全</h3>
+                  <span class="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold">PBKDF2 10 萬次加密</span>
+                </div>
+                ${a.weakPasswordWarning ? `
+                  <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 font-semibold leading-relaxed">
+                    ⚠️ 您目前的密碼尚未符合最新高強度標準（至少 10 碼且含英文大小寫與數字），建議立即於下方更換新密碼以保護員工個資與薪資資料。
                   </div>
-                  <button type="submit" class="h-8 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer">更新登入密碼</button>
+                ` : ''}
+                <form onsubmit="updateAccountPassword(event)" class="space-y-3">
+                  <div><label class="block font-semibold text-slate-600 mb-1">目前密碼 *</label><input type="password" value="${a.pwdDraft.current}" oninput="App.auth.pwdDraft.current=this.value" placeholder="請輸入目前使用中的密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="block font-semibold text-slate-600 mb-1">新密碼（至少 10 碼，含大小寫英文與數字）*</label>
+                      <input type="password" value="${a.pwdDraft.next}" oninput="App.auth.pwdDraft.next=this.value;updatePasswordStrengthDom('acct-pw-strength', this.value, App.auth.email)" placeholder="例：Tea2026!Shop" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    </div>
+                    <div>
+                      <label class="block font-semibold text-slate-600 mb-1">確認新密碼 *</label>
+                      <input type="password" value="${a.pwdDraft.confirm}" oninput="App.auth.pwdDraft.confirm=this.value" placeholder="再次輸入新密碼" class="w-full h-9 px-3 rounded-lg border border-slate-200" />
+                    </div>
+                  </div>
+                  <div id="acct-pw-strength">${renderPasswordStrengthBarHtml(a.pwdDraft.next || '', a.email || '')}</div>
+                  <button type="submit" class="h-8 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer">更新高強度密碼</button>
                 </form>
+
+                <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <div class="font-bold text-slate-800">公用電腦閒置自動登出保護</div>
+                    <div class="text-[11px] text-slate-500">避免櫃檯電腦忘記登出被看到全店薪資與證件資料</div>
+                  </div>
+                  <select onchange="App.auth.idleTimeoutMinutes=Number(this.value)||60;App.toast='已更新閒置自動登出時間為 '+App.auth.idleTimeoutMinutes+' 分鐘。';render()" class="h-8 px-2.5 rounded-lg border border-slate-200 bg-white font-semibold cursor-pointer">
+                    <option value="30" ${(a.idleTimeoutMinutes||60)===30?'selected':''}>30 分鐘</option>
+                    <option value="60" ${(a.idleTimeoutMinutes||60)===60?'selected':''}>60 分鐘（建議）</option>
+                    <option value="120" ${(a.idleTimeoutMinutes||60)===120?'selected':''}>120 分鐘</option>
+                  </select>
+                </div>
 
                 <div class="pt-3 border-t border-slate-100 space-y-2">
                   <div class="font-bold text-slate-900">目前已登入裝置 (${a.sessions.length})</div>
@@ -9043,6 +9302,7 @@ end $$;`;
     };
 
     restoreAuthSession();
+    initIdleAutoLogoutGuard();
     render();
     initRealLineLiff();
     initCloudSync(false);
