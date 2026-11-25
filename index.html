@@ -793,6 +793,7 @@
           STAFF:         { schedEdit: false, storeHours: false, hrDocs: false, payrollManage: false, approveLeave: false, approvePunch: false, exportCsv: false, settingsAdmin: false },
         },
         managerOnLeave: false,
+        managerDeputyEmpId: '',
         admins: [
           { id: 'adm-1', name: '吳承翰', title: '品牌創辦人 / 老闆', role: 'OWNER', contact: 'boss@shanbei-tea.tw', lineBound: true, scope: '全品牌所有門市', active: true },
           { id: 'adm-2', name: '許雅婷', title: '總部人資專員 (HR)', role: 'HR', contact: 'hr@shanbei-tea.tw', lineBound: true, scope: '北區 4 家門市', active: true },
@@ -1365,6 +1366,8 @@
       App.storeSettings.monthlyFixedOverhead = 0;
       App.storeSettings.workstations = [];
       if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
+      App.storeSettings.managerOnLeave = false;
+      App.storeSettings.managerDeputyEmpId = '';
       App.storeSettings.admins = [
         { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: email || '', lineBound: false, scope: '全門市', active: true },
       ];
@@ -1414,6 +1417,8 @@
       App.storeSettings.geoTestResult = null;
       App.storeSettings.workstations = [];
       if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
+      App.storeSettings.managerOnLeave = false;
+      App.storeSettings.managerDeputyEmpId = '';
       App.storeSettings.admins = [
         { id: 'adm-1', name: '品牌負責人', title: '老闆 / 負責人', role: 'OWNER', contact: App.auth.email || '', lineBound: false, scope: '全門市', active: true },
       ];
@@ -1954,34 +1959,173 @@
       return `https://liff.line.me/${App.lineLiff.liffId}?${params.toString()}`;
     }
 
-    function getStoreApproverLineUserIds(permKey) {
-      const admins = (App.storeSettings && App.storeSettings.admins) || [];
-      const perms = (App.storeSettings && App.storeSettings.permissions) || {};
-      const uids = new Set();
-      const matchedAdmins = [];
-      (App.employees || []).forEach(emp => {
-        if (!emp || !emp.lineUserId || isEmployeeResigned(emp)) return;
-        const empName = (emp.name || '').trim();
-        const adm = admins.find(a =>
-          a && a.active !== false && a.role && a.role !== 'STAFF' &&
-          ((a.employeeId && a.employeeId === emp.id) || (a.name && a.name.trim() === empName))
-        );
-        if (!adm) return;
-        const rolePerms = perms[adm.role] || {};
-        const canApprove = permKey
-          ? Boolean(rolePerms[permKey] || adm.role === 'OWNER')
-          : Boolean(rolePerms.approveLeave || rolePerms.approvePunch || adm.role === 'OWNER' || adm.role === 'STORE_MANAGER');
-        if (canApprove) {
-          uids.add(emp.lineUserId);
-          matchedAdmins.push({ id: emp.id, name: emp.name, role: adm.role, lineUserId: emp.lineUserId });
-        }
+    function isValidLineUserId(uid) {
+      return /^U[0-9a-f]{16,64}$/i.test(String(uid || '').trim());
+    }
+
+    function findLinkedEmployeeForAdmin(adm) {
+      if (!adm) return null;
+      const admName = String(adm.name || '').trim();
+      return (App.employees || []).find(e =>
+        e && !isEmployeeResigned(e) &&
+        ((adm.employeeId && e.id === adm.employeeId) || (admName && String(e.name || '').trim() === admName))
+      ) || null;
+    }
+
+    // 單一窗口 LINE 簽核通知／簽核人路由規則：
+    // 1. 有店長且未請假 → 只傳給店長 1 人（店長自己送單或尚未綁定 LINE 時才轉老闆）
+    // 2. 店長請假中（當日有已核准請假單，或勾選「店長休假中」）→ 只傳給代理人 1 人（假單代理人 → 指定代理人 → 值班副店長）；無代理人則改傳老闆 1 人
+    // 3. 門市未設店長 → 只傳給老闆 1 人
+    function resolveSingleLineApprover(opts) {
+      const cfg = opts || {};
+      const dateStr = cfg.dateStr || getTaipeiTodayStr();
+      const requesterEmpId = cfg.requesterEmpId || '';
+      const requireLineUid = Boolean(cfg.requireLineUid);
+      const activeAdmins = ((App.storeSettings && App.storeSettings.admins) || []).filter(a => a && a.active !== false);
+      const mgrAdmin = activeAdmins.find(a => a.role === 'STORE_MANAGER') || null;
+      const ownerAdmin = activeAdmins.find(a => a.role === 'OWNER') || null;
+      const shiftLeadAdmins = activeAdmins.filter(a => a.role === 'SHIFT_LEAD');
+      const mgrEmp = mgrAdmin ? findLinkedEmployeeForAdmin(mgrAdmin) : null;
+      const ownerEmp = ownerAdmin ? findLinkedEmployeeForAdmin(ownerAdmin) : null;
+
+      const approvedMgrLeave = mgrEmp
+        ? (App.liff && Array.isArray(App.liff.requests) ? App.liff.requests : []).find(r =>
+            r && r.kind === 'LEAVE' && r.status === 'APPROVED' && r.employeeId === mgrEmp.id && r.date === dateStr
+          ) || null
+        : null;
+      const isMgrOnLeave = Boolean(mgrAdmin && ((App.storeSettings && App.storeSettings.managerOnLeave) || approvedMgrLeave));
+      const isSelfRequestByMgr = Boolean(requesterEmpId && mgrEmp && mgrEmp.id === requesterEmpId);
+      const managerName = (mgrEmp && mgrEmp.name) || (mgrAdmin && mgrAdmin.name) || '';
+
+      const isEligible = (emp, adm) => {
+        if (!emp && !adm) return false;
+        if (requesterEmpId && emp && emp.id === requesterEmpId) return false;
+        if (requireLineUid) return Boolean(emp && isValidLineUserId(emp.lineUserId));
+        return true;
+      };
+
+      const buildResult = (emp, adm, role, roleLabel, isDelegated, reason) => ({
+        emp: emp || null,
+        admin: adm || null,
+        empId: emp ? emp.id : '',
+        name: (emp && emp.name) || (adm && adm.name) || '門市管理員',
+        role,
+        roleLabel,
+        lineUserId: (emp && isValidLineUserId(emp.lineUserId)) ? String(emp.lineUserId).trim() : '',
+        isDelegated: Boolean(isDelegated),
+        isMgrOnLeave,
+        managerName,
+        reason,
+        dateStr,
+        shiftLabel: '',
       });
-      return { userIds: Array.from(uids), admins: matchedAdmins };
+
+      const pickOwner = (isDelegated, reason) => {
+        if (ownerAdmin && isEligible(ownerEmp, ownerAdmin)) {
+          return buildResult(ownerEmp, ownerAdmin, 'OWNER', isDelegated ? '老闆（代理簽核）' : '老闆', isDelegated, reason);
+        }
+        return null;
+      };
+
+      // 情況 1：門市有指派店長
+      if (mgrAdmin) {
+        // 1A：店長自己提出申請 → 改通知老闆 1 人
+        if (isSelfRequestByMgr) {
+          const ownerRes = pickOwner(false, 'MANAGER_SELF_REQUEST_TO_OWNER');
+          if (ownerRes) return ownerRes;
+          if (!requireLineUid) {
+            return buildResult(ownerEmp, ownerAdmin || { name: (App.auth && App.auth.ownerName) || '老闆', role: 'OWNER' }, 'OWNER', '老闆', false, 'MANAGER_SELF_REQUEST_TO_OWNER');
+          }
+          return null;
+        }
+
+        // 1B：店長請假中 → 只傳給代理人 1 人（假單代理人 → 門市指定代理人 → 值班副店長）；沒有代理人再轉老闆
+        if (isMgrOnLeave) {
+          const deputyCandidates = [];
+          const seenKeys = new Set();
+          const pushDeputy = (empId, adm, src) => {
+            if (!empId && !adm) return;
+            const emp = empId
+              ? (App.employees || []).find(e => e && e.id === empId && !isEmployeeResigned(e)) || null
+              : findLinkedEmployeeForAdmin(adm);
+            if (emp && mgrEmp && emp.id === mgrEmp.id) return;
+            const key = emp ? `emp:${emp.id}` : `adm:${adm && adm.id}`;
+            if (seenKeys.has(key)) return;
+            seenKeys.add(key);
+            deputyCandidates.push({ emp, adm: adm || null, src });
+          };
+
+          if (approvedMgrLeave && approvedMgrLeave.deputyId) {
+            pushDeputy(approvedMgrLeave.deputyId, null, 'LEAVE_DEPUTY');
+          }
+          if (App.storeSettings && App.storeSettings.managerDeputyEmpId) {
+            pushDeputy(App.storeSettings.managerDeputyEmpId, null, 'STORE_DEPUTY');
+          }
+          shiftLeadAdmins.forEach(a => pushDeputy(a.employeeId || '', a, 'SHIFT_LEAD'));
+
+          for (const cand of deputyCandidates) {
+            if (isEligible(cand.emp, cand.adm)) {
+              return buildResult(cand.emp, cand.adm, 'DEPUTY', '店長代理人', true, `MANAGER_ON_LEAVE_${cand.src}`);
+            }
+          }
+          const ownerFallback = pickOwner(true, 'MANAGER_ON_LEAVE_NO_DEPUTY_OWNER');
+          if (ownerFallback) return ownerFallback;
+          if (!requireLineUid) {
+            return buildResult(null, { name: (App.auth && App.auth.ownerName) || '老闆', role: 'OWNER' }, 'OWNER', '老闆（代理簽核）', true, 'MANAGER_ON_LEAVE_NO_DEPUTY_OWNER');
+          }
+          return null;
+        }
+
+        // 1C：店長正常上班 → 只傳給店長 1 人
+        if (isEligible(mgrEmp, mgrAdmin)) {
+          return buildResult(mgrEmp, mgrAdmin, 'STORE_MANAGER', '店長', false, 'STORE_MANAGER');
+        }
+        // 店長尚未綁定 LINE 時，暫時改傳已綁定的老闆避免漏單
+        const ownerFallback = pickOwner(false, 'MANAGER_UNBOUND_FALLBACK_OWNER');
+        if (ownerFallback) return ownerFallback;
+        return null;
+      }
+
+      // 情況 2：門市未指派店長 → 只傳給老闆 1 人
+      const ownerRes = pickOwner(false, 'NO_STORE_MANAGER_OWNER');
+      if (ownerRes) return ownerRes;
+
+      if (!requireLineUid) {
+        const fallbackAdm = activeAdmins[0] || { name: (App.auth && App.auth.ownerName) || '門市管理員', role: 'OWNER' };
+        const fallbackEmp = findLinkedEmployeeForAdmin(fallbackAdm);
+        const fallbackRoleLabel = fallbackAdm.role === 'OWNER' ? '老闆' : fallbackAdm.role === 'SHIFT_LEAD' ? '值班副店長' : '店長';
+        return buildResult(fallbackEmp, fallbackAdm, fallbackAdm.role || 'OWNER', fallbackRoleLabel, false, 'FALLBACK_ADMIN');
+      }
+      return null;
+    }
+
+    function getStoreApproverLineUserIds(permKey, opts) {
+      const cfg = opts || {};
+      const approver = resolveSingleLineApprover({
+        dateStr: cfg.dateStr || getTaipeiTodayStr(),
+        requesterEmpId: cfg.requesterEmpId || '',
+        requireLineUid: true,
+      });
+      if (!approver || !approver.lineUserId) {
+        return { userIds: [], admins: [], approver: null };
+      }
+      return {
+        userIds: [approver.lineUserId],
+        admins: [{
+          id: approver.empId,
+          name: approver.name,
+          role: approver.role,
+          roleLabel: approver.roleLabel,
+          lineUserId: approver.lineUserId,
+          isDelegated: approver.isDelegated,
+        }],
+        approver,
+      };
     }
 
     async function sendLinePushNotification(payload) {
       const toList = Array.isArray(payload && payload.to) ? payload.to : (payload && payload.to ? [payload.to] : []);
-      const validTo = toList.map(x => String(x || '').trim()).filter(u => /^U[0-9a-f]{16,64}$/i.test(u));
+      const validTo = toList.map(x => String(x || '').trim()).filter(u => isValidLineUserId(u));
       if (validTo.length === 0) return { ok: false, code: 'NO_RECIPIENTS', error: '無已綁定 LINE 的通知對象' };
       const baseUrl = String((App.cloud && App.cloud.url) || DEFAULT_CLOUD_CONFIG.url || '').replace(/\/+$/, '');
       const anonKey = String((App.cloud && App.cloud.anonKey) || DEFAULT_CLOUD_CONFIG.anonKey || '');
@@ -2012,11 +2156,17 @@
     }
 
     function notifyManagersOfNewRequest(opts) {
-      const { userIds } = getStoreApproverLineUserIds(opts.permKey);
+      const { userIds, approver } = getStoreApproverLineUserIds(opts.permKey, {
+        requesterEmpId: opts.emp && opts.emp.id ? opts.emp.id : '',
+        dateStr: getTaipeiTodayStr(),
+      });
       if (!userIds.length) return Promise.resolve({ ok: false, code: 'NO_RECIPIENTS' });
       const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
       const empName = (opts.emp && opts.emp.name) || '員工';
       const lines = [];
+      if (approver && approver.isDelegated && approver.managerName) {
+        lines.push(`代理通知：店長 ${approver.managerName} 請假中，轉由您（${approver.roleLabel}）簽核`);
+      }
       if (opts.date) lines.push(`日期：${opts.date}`);
       if (opts.summary) lines.push(`內容：${opts.summary}`);
       if (opts.reason) lines.push(`事由：${opts.reason}`);
@@ -2058,40 +2208,42 @@
     }
 
     async function sendTestLineNotification() {
-      const { userIds, admins } = getStoreApproverLineUserIds();
+      const { userIds, approver } = getStoreApproverLineUserIds();
       const targetIds = userIds.length
         ? userIds
-        : ((App.lineLiff && App.lineLiff.profile && App.lineLiff.profile.userId) ? [App.lineLiff.profile.userId] : []);
+        : ((App.lineLiff && App.lineLiff.profile && isValidLineUserId(App.lineLiff.profile.userId)) ? [App.lineLiff.profile.userId] : []);
       if (!targetIds.length) {
-        App.toast = '⚠️ 目前尚無已綁定 LINE 的店長／老闆！請先用手機掃門市 QR Code 綁定自己的名字，並在右側管理員名單指派為老闆或店長。';
+        App.toast = '⚠️ 目前尚無已綁定 LINE 的通知對象（店長／代理人／老闆）！請先用手機掃門市 QR Code 綁定自己的名字，並在右側管理員名單指派角色。';
         render();
         return;
       }
       App.toast = '⏳ 正在發送 LINE 測試通知…';
       render();
       const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
+      const targetLabel = approver ? `${approver.name}（${approver.roleLabel}）` : '目前登入帳號';
       const res = await sendLinePushNotification({
         to: targetIds,
         headerTitle: '🔔 班匠 LINE 推播測試成功',
         headerColor: '#06C755',
         storeName,
-        headline: '雙向 LINE 簽核推播已連線！',
+        headline: '單一窗口 LINE 簽核推播已連線！',
         lines: [
+          `目前接收通知者：${targetLabel}`,
           `測試時間：${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`,
-          '員工提交請假／調班／加班／補卡時，主管將即時收到通知。',
-          '主管核准或駁回後，員工也會同步收到 LINE 結果通知。',
+          '規則：僅傳店長 1 人 → 未設店長傳老闆 → 店長請假轉代理人（無則轉老闆）。',
         ],
         buttonLabel: '開啟 LINE 簽核中心',
         buttonUrl: getStoreLiffDeepLink({ role: 'MANAGER', filter: 'ALL' }),
         altText: `【${storeName}】班匠 LINE 簽核推播測試成功！`,
       });
       if (res.ok) {
-        const names = admins.map(a => a.name).join('、') || '目前登入帳號';
-        App.toast = `✅ 已發送測試推播給 ${res.sent} 位主管（${names}）！請確認手機 LINE 官方帳號是否收到訊息。`;
+        App.toast = `✅ 已發送測試推播給 ${targetLabel}（共 1 人）！請確認手機 LINE 官方帳號是否收到訊息。`;
       } else if (res.code === 'MISSING_TOKEN') {
         App.toast = '❌ 尚未在 Supabase Edge Function 設定 LINE_CHANNEL_ACCESS_TOKEN 密鑰。';
       } else if (res.status === 404 || res.code === 'NETWORK_ERROR') {
         App.toast = '❌ 尚未部署 Supabase Edge Function（名稱：line-notify），請先於 Supabase 後台完成部署。';
+      } else if (res.status === 401) {
+        App.toast = '❌ Supabase Edge Function 尚未關閉 Verify JWT（請於 Supabase → Edge Functions → line-notify → Details 關閉 Verify JWT）。';
       } else {
         App.toast = `❌ LINE 推播發送失敗：${res.error || res.code}（請確認收件人已加入官方帳號好友）`;
       }
@@ -4493,29 +4645,26 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       });
     }
 
-    function getActiveLineApprover(targetDate) {
-      const dateStr = targetDate || App.sched.selectedDate || getTaipeiTodayStr();
-      const admins = (App.storeSettings && App.storeSettings.admins) || [];
-      const mgr = admins.find(a => a.role === 'STORE_MANAGER' && a.active !== false)
-        || admins.find(a => a.role === 'OWNER' && a.active !== false)
-        || admins.find(a => a.role === 'SHIFT_LEAD' && a.active !== false)
-        || { name: (App.auth && App.auth.ownerName) || '門市管理員', role: 'STORE_MANAGER' };
-      const roleLabel = mgr.role === 'OWNER' ? '老闆' : mgr.role === 'SHIFT_LEAD' ? '值班副店長' : '店長';
-      return { isDelegated: false, name: mgr.name, roleLabel, shiftLabel: '', managerName: mgr.name, dateStr };
+    function getActiveLineApprover(targetDate, requesterEmpId) {
+      const dateStr = targetDate || getTaipeiTodayStr();
+      const ap = resolveSingleLineApprover({ dateStr, requesterEmpId: requesterEmpId || '', requireLineUid: false });
+      if (ap) return ap;
+      const fallbackName = (App.auth && App.auth.ownerName) || '門市管理員';
+      return { emp: null, admin: null, empId: '', isDelegated: false, isMgrOnLeave: false, name: fallbackName, role: 'OWNER', roleLabel: '老闆', shiftLabel: '', managerName: '', dateStr };
     }
 
     function managerSignOff(reqId, decision, viaLine, overrideComp) {
       const req = App.liff.requests.find(r => r.id === reqId);
       if (!req || req.status !== 'PENDING') return;
-      const ap = getActiveLineApprover(App.sched.selectedDate);
+      const ap = getActiveLineApprover(getTaipeiTodayStr(), req.employeeId);
       const noteEl = document.getElementById((viaLine ? 'line-mgr-note-' : 'mgr-note-') + reqId);
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
       req.signedBy = `${ap.name} (${ap.roleLabel})`;
       req.reviewedAt = `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
-        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班、假別與薪資') : '已核准，系統已同步排班、假別與薪資')
-        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '未核准，請另行協調'));
+        ? (viaLine ? (ap.isDelegated ? `已由 ${ap.roleLabel} ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班、假別與薪資') : '已核准，系統已同步排班、假別與薪資')
+        : (viaLine ? (ap.isDelegated ? `已由 ${ap.roleLabel} ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '未核准，請另行協調'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         if (req.kind === 'LEAVE') {
@@ -4585,8 +4734,8 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       pendingLeave.forEach(r => managerSignOff(r.id, 'APPROVED', true));
       pendingPunch.forEach(c => reviewMissedPunch(c.id, 'APPROVED', true));
       App.toast = ap.isDelegated
-        ? `值班副店長 ${ap.name} 已透過 LINE 代理核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`
-        : `店長已透過 LINE 一鍵核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`;
+        ? `${ap.roleLabel} ${ap.name} 已透過 LINE 代理核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`
+        : `${ap.name}（${ap.roleLabel}）已透過 LINE 一鍵核准 ${total} 筆簽核單，班表、假別與薪資已同步更新。`;
       render();
     }
 
@@ -4840,15 +4989,15 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     function reviewMissedPunch(mpId, decision, viaLine) {
       const req = App.attendance.corrections.find(c => c.id === mpId);
       if (!req || req.status !== 'PENDING') return;
-      const ap = getActiveLineApprover(App.sched.selectedDate);
+      const ap = getActiveLineApprover(getTaipeiTodayStr(), req.employeeId);
       const noteEl = document.getElementById((viaLine ? 'line-mp-note-' : 'mp-note-') + mpId);
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
       req.signedBy = `${ap.name} (${ap.roleLabel})`;
       req.reviewedAt = `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
-        ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准補登` : '已透過 LINE 核對無誤，准予補登') : '核對無誤，准予補登')
-        : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回補登` : '已透過 LINE 駁回，時間與紀錄不符') : '時間與紀錄不符'));
+        ? (viaLine ? (ap.isDelegated ? `已由 ${ap.roleLabel} ${ap.name} 透過 LINE 核准補登` : '已透過 LINE 核對無誤，准予補登') : '核對無誤，准予補登')
+        : (viaLine ? (ap.isDelegated ? `已由 ${ap.roleLabel} ${ap.name} 透過 LINE 駁回補登` : '已透過 LINE 駁回，時間與紀錄不符') : '時間與紀錄不符'));
       const emp = App.employees.find(e => e.id === req.employeeId);
       if (decision === 'APPROVED') {
         let log = App.attendance.logs.find(l => l.id === req.logId || (l.employeeId === req.employeeId && l.date === req.date));
@@ -8199,12 +8348,53 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 class="text-sm font-bold text-slate-900">門市管理員名單與權限指派 (${st.admins.length} 位)</h3>
-                    <p class="text-[11px] text-slate-500 mt-0.5">指派角色後即時連動左側帳號權限與 LINE 雙向簽核推播</p>
+                    <p class="text-[11px] text-slate-500 mt-0.5">單一通知：只傳店長 1 人（未設店長傳老闆；店長請假轉代理人，無代理人則傳老闆）</p>
                   </div>
                   <button type="button" onclick="sendTestLineNotification()" class="h-8 px-3 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-[11px] font-bold cursor-pointer shadow-xs">
                     🔔 測試發送 LINE 通知
                   </button>
                 </div>
+
+                ${(() => {
+                  const todayTw = getTaipeiTodayStr();
+                  const intendedAp = resolveSingleLineApprover({ dateStr: todayTw, requireLineUid: false });
+                  const actualAp = resolveSingleLineApprover({ dateStr: todayTw, requireLineUid: true });
+                  const mgrAdmin = (st.admins || []).find(a => a && a.active !== false && a.role === 'STORE_MANAGER') || null;
+                  const mgrEmp = mgrAdmin ? findLinkedEmployeeForAdmin(mgrAdmin) : null;
+                  const deputyOpts = (App.employees || []).filter(e => e && !isEmployeeResigned(e) && (!mgrEmp || e.id !== mgrEmp.id));
+                  const statusTone = actualAp && intendedAp && actualAp.name === intendedAp.name
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-amber-50 border-amber-200 text-amber-900';
+                  const statusMsg = actualAp && intendedAp && actualAp.name === intendedAp.name
+                    ? `🟢 目前 LINE 單一通知對象：${actualAp.name}（${actualAp.roleLabel}）`
+                    : (actualAp && intendedAp
+                      ? `⚠️ 原對象「${intendedAp.name}（${intendedAp.roleLabel}）」尚未綁定 LINE，暫改通知：${actualAp.name}（${actualAp.roleLabel}）🟢`
+                      : (intendedAp
+                        ? `🟡 通知對象「${intendedAp.name}（${intendedAp.roleLabel}）」尚未綁定手機 LINE（請先掃門市 QR Code 綁定姓名）`
+                        : '🟡 尚未設定已綁定 LINE 的店長或老闆'));
+                  return `
+                    <div class="p-3.5 border-b border-[var(--border)] bg-white space-y-2.5">
+                      <div class="rounded-lg border px-3 py-2 text-[11px] font-bold ${statusTone}">
+                        <div>${statusMsg}</div>
+                        ${intendedAp && intendedAp.isMgrOnLeave ? `<div class="text-[10px] font-semibold mt-0.5 opacity-85">🏖️ 店長 ${intendedAp.managerName || ''} 今日請假／休假中，已自動切換代理通知。</div>` : ''}
+                      </div>
+                      ${mgrAdmin ? `
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 items-center text-[11px]">
+                          <label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer font-semibold text-slate-700">
+                            <input type="checkbox" ${st.managerOnLeave ? 'checked' : ''} onchange="App.storeSettings.managerOnLeave=this.checked;render();pushStoreToCloud(App.multiStore.activeStoreId);" class="accent-[#0F766E] w-3.5 h-3.5 cursor-pointer" />
+                            <span>店長（${mgrAdmin.name}）請假／休假中</span>
+                          </label>
+                          <select onchange="App.storeSettings.managerDeputyEmpId=this.value;render();pushStoreToCloud(App.multiStore.activeStoreId);" class="h-8 px-2 rounded-lg border border-slate-200 bg-white font-semibold text-slate-700 cursor-pointer">
+                            <option value="">代理人：自動（假單代理人 → 副店長 → 老闆）</option>
+                            ${deputyOpts.map(e => `<option value="${e.id}" ${st.managerDeputyEmpId===e.id?'selected':''}>指定代理人：${e.name}（${e.lineUserId ? '🟢 已綁 LINE' : '未綁 LINE'}）</option>`).join('')}
+                          </select>
+                        </div>
+                      ` : `
+                        <div class="text-[11px] text-slate-500">目前門市未指派「店長」，所有待簽核通知將自動只傳給「老闆」1 人。</div>
+                      `}
+                    </div>
+                  `;
+                })()}
 
                 <div class="p-3.5 border-b border-[var(--border)] bg-slate-50/60">
                   <form onsubmit="addStoreAdmin(event)" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -8795,7 +8985,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       const f = App.liffMgrFilter || 'ALL';
       const showLeave = f === 'ALL' || f === 'LEAVE';
       const showPunch = f === 'ALL' || f === 'PUNCH';
-      const ap = getActiveLineApprover(App.sched.selectedDate);
+      const ap = getActiveLineApprover();
       const doneItems = [
         ...App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
           const e = App.employees.find(x => x.id === r.employeeId);
@@ -8822,11 +9012,12 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           </div>
 
           <!-- 目前簽核人 -->
-          <div class="rounded-lg p-2.5 border bg-white border-slate-200 flex items-center justify-between gap-2">
-            <div class="text-[11px] font-bold text-slate-800">
-              目前簽核人：${ap.name} <span class="font-semibold text-[#0F766E]">(${ap.roleLabel})</span>
+          <div class="rounded-lg p-2.5 border ${ap.isDelegated ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'} flex items-center justify-between gap-2">
+            <div class="text-[11px] font-bold ${ap.isDelegated ? 'text-amber-900' : 'text-slate-800'}">
+              目前簽核人：${ap.name} <span class="font-semibold ${ap.isDelegated ? 'text-amber-700' : 'text-[#0F766E]'}">(${ap.roleLabel})</span>
+              ${ap.isDelegated && ap.managerName ? `<div class="text-[10px] font-normal text-amber-700 mt-0.5">店長 ${ap.managerName} 請假中，已自動轉由代理人／老闆簽核</div>` : ''}
             </div>
-            <span class="text-[10px] text-slate-400 font-medium">即時同步後台</span>
+            <span class="text-[10px] text-slate-400 font-medium shrink-0">即時同步後台</span>
           </div>
 
           <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
@@ -9034,8 +9225,12 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
 
       const boundAdminRole = isRealLineUser ? getLineEmployeeAdminRole(boundEmp) : null;
       const hasBackendAccess = isRealLineUser ? Boolean(boundAdminRole) : false;
+      const activeTodayAp = getActiveLineApprover();
+      const isActiveDelegatedDeputy = Boolean(
+        isRealLineUser && boundEmp && activeTodayAp && activeTodayAp.isDelegated && activeTodayAp.empId === boundEmp.id
+      );
       const canLineApprove = isRealLineUser
-        ? (boundAdminRole === 'OWNER' || boundAdminRole === 'STORE_MANAGER' || boundAdminRole === 'SHIFT_LEAD')
+        ? (boundAdminRole === 'OWNER' || boundAdminRole === 'STORE_MANAGER' || boundAdminRole === 'SHIFT_LEAD' || isActiveDelegatedDeputy)
         : (hasRolePerm('approveLeave') || hasRolePerm('approvePunch'));
       const isMgr = canLineApprove && App.liffRole === 'MANAGER';
       const isStaffOnly = isRealLineUser ? !canLineApprove : (App.storeSettings.activeRole === 'STAFF');
