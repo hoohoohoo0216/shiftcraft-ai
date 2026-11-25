@@ -597,10 +597,15 @@
       liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
       lineLiff: {
         liffId: '2012747321-uH6zNzCm',
+        oaBasicId: '',
         ready: false,
         inClient: false,
         loggedIn: false,
         profile: null,
+        isFriend: null,
+        justBound: false,
+        oaTipDismissed: (() => { try { return localStorage.getItem('shiftcraft_oa_tip_dismissed_v1') === '1'; } catch (e) { return false; } })(),
+        resolvedFromCloud: false,
         error: null,
         bootLoading: (
           /Line\/|LIFF/i.test(navigator.userAgent || '') ||
@@ -758,6 +763,7 @@
         subTab: 'BASIC', // 'BASIC' | 'GEO' | 'STATIONS' | 'RBAC'
         name: '山焙森茶・中山南西概念店', code: '', taxId: '90482715',
         address: '台北市中山區南京西路18巷6號1樓', phone: '02-2558-9210', openTime: '08:30', closeTime: '22:30',
+        lineOaId: '',
         scheduleStartHour: 8, scheduleEndHour: 23,
         monthlyFixedOverhead: 0,
         ptPunchPayMode: 'ACTUAL', // 'ACTUAL' (實打實計) | 'SCHEDULE_ALIGNED' (排班對齊＋超時簽核)
@@ -1779,6 +1785,136 @@
       }
     }
 
+    let _lineBindingBackfilledKey = '';
+
+    function getLineBindingSupabaseClient() {
+      if (_sbClient) return _sbClient;
+      if (typeof getAccountSupabaseClient === 'function') return getAccountSupabaseClient();
+      return null;
+    }
+
+    function persistCloudStoreCfg(brandId, storeId) {
+      if (!brandId) return;
+      try {
+        const raw = localStorage.getItem(CLOUD_CFG_KEY);
+        const cur = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({
+          url: App.cloud.url || cur.url || DEFAULT_CLOUD_CONFIG.url,
+          anonKey: App.cloud.anonKey || cur.anonKey || DEFAULT_CLOUD_CONFIG.anonKey,
+          brandId,
+          storeId: storeId || cur.storeId || '',
+        }));
+      } catch (e) {}
+    }
+
+    async function lookupLineBindingFromCloud(lineUserId) {
+      if (!lineUserId) return null;
+      const sb = getLineBindingSupabaseClient();
+      if (!sb) return null;
+      try {
+        const rpcRes = await sb.rpc('liff_lookup_binding', { p_line_user_id: lineUserId });
+        if (!rpcRes.error && rpcRes.data) {
+          const row = Array.isArray(rpcRes.data) ? rpcRes.data[0] : rpcRes.data;
+          if (row && row.brand_id) return row;
+        }
+        if (rpcRes.error) {
+          const fb = await sb
+            .from('shiftcraft_line_bindings')
+            .select('line_user_id,brand_id,store_id,employee_id,employee_name')
+            .eq('line_user_id', lineUserId)
+            .maybeSingle();
+          if (!fb.error && fb.data && fb.data.brand_id) return fb.data;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    async function saveLineBindingToCloud(lineUserId, brandId, storeId, employeeId, employeeName) {
+      if (!lineUserId || !brandId || !storeId || !employeeId) return false;
+      const sb = getLineBindingSupabaseClient();
+      if (!sb) return false;
+      try {
+        const rpcRes = await sb.rpc('liff_save_binding', {
+          p_line_user_id: lineUserId,
+          p_brand_id: brandId,
+          p_store_id: storeId,
+          p_employee_id: employeeId,
+          p_employee_name: employeeName || '',
+        });
+        if (!rpcRes.error) return true;
+        const fb = await sb.from('shiftcraft_line_bindings').upsert({
+          line_user_id: lineUserId,
+          brand_id: brandId,
+          store_id: storeId,
+          employee_id: employeeId,
+          employee_name: employeeName || '',
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'line_user_id' });
+        return !fb.error;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    async function deleteLineBindingFromCloud(lineUserId) {
+      if (!lineUserId) return false;
+      const sb = getLineBindingSupabaseClient();
+      if (!sb) return false;
+      try {
+        const rpcRes = await sb.rpc('liff_delete_binding', { p_line_user_id: lineUserId });
+        if (!rpcRes.error) return true;
+        const fb = await sb.from('shiftcraft_line_bindings').delete().eq('line_user_id', lineUserId);
+        return !fb.error;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function getLineOfficialAccountUrl() {
+      const raw = String((App.storeSettings && App.storeSettings.lineOaId) || (App.lineLiff && App.lineLiff.oaBasicId) || '').trim();
+      if (!raw) return '';
+      if (/^https?:\/\//i.test(raw)) return raw;
+      const handle = raw.startsWith('@') ? raw : ('@' + raw.replace(/^@+/, ''));
+      return `https://line.me/R/ti/p/${encodeURIComponent(handle)}`;
+    }
+
+    function openLineOfficialAccountGuide() {
+      const oaUrl = getLineOfficialAccountUrl();
+      if (oaUrl) {
+        try {
+          if (typeof liff !== 'undefined' && App.lineLiff && App.lineLiff.inClient && typeof liff.openWindow === 'function') {
+            liff.openWindow({ url: oaUrl, external: true });
+          } else {
+            window.open(oaUrl, '_blank', 'noopener');
+          }
+        } catch (e) {
+          window.open(oaUrl, '_blank', 'noopener');
+        }
+        App.toast = '已開啟 LINE 官方帳號頁面，加入好友並「釘選聊天室」後，在家點選單就能隨時請假與看班表！';
+        render();
+        return;
+      }
+      // 若門市尚未填入官方帳號 ID，貼心複製門市專屬連結供員工存到 LINE Keep 筆記，並提示店長設定
+      const link = getStoreLineInviteLink();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(() => {
+          App.toast = '已複製門市專屬入口！請貼到 LINE「Keep 筆記」或門市群組置頂即可隨時請假。（店長可至「店鋪設定 → 基本資料」填入官方帳號 ID 啟用一鍵加好友）';
+          render();
+        }).catch(() => {
+          window.prompt('請複製此門市專屬連結並貼到 LINE Keep 筆記：', link);
+        });
+      } else {
+        window.prompt('請複製此門市專屬連結並貼到 LINE Keep 筆記：', link);
+      }
+    }
+
+    function dismissLineOaTip() {
+      App.lineLiff.justBound = false;
+      App.lineLiff.oaTipDismissed = true;
+      try { localStorage.setItem('shiftcraft_oa_tip_dismissed_v1', '1'); } catch (e) {}
+      render();
+    }
+
     function syncBoundLineEmployee() {
       const prof = App.lineLiff && App.lineLiff.profile;
       if (!prof || !prof.userId) return null;
@@ -1789,6 +1925,17 @@
         App.payroll.liffEmpId = matched.id;
         App.payroll.selectedEmpId = matched.id;
         App.sched.liffEmpId = matched.id;
+        // 自動補寫雲端跨裝置索引（舊綁定員工也能享換手機免重掃）
+        const bId = App.multiStore && App.multiStore.brandId;
+        const sId = App.multiStore && App.multiStore.activeStoreId;
+        if (bId && sId && bId !== 'brand-shiftcraft-demo') {
+          const bfKey = `${prof.userId}|${bId}|${sId}|${matched.id}`;
+          if (_lineBindingBackfilledKey !== bfKey) {
+            _lineBindingBackfilledKey = bfKey;
+            persistCloudStoreCfg(bId, sId);
+            saveLineBindingToCloud(prof.userId, bId, sId, matched.id, matched.name);
+          }
+        }
       }
       return matched || null;
     }
@@ -1809,10 +1956,18 @@
       target.lineUserId = prof.userId;
       target.lineDisplayName = prof.displayName || '';
       target.linePictureUrl = prof.pictureUrl || '';
+      const bId = App.multiStore.brandId;
+      const sId = App.multiStore.activeStoreId;
+      persistCloudStoreCfg(bId, sId);
+      _lineBindingBackfilledKey = `${prof.userId}|${bId}|${sId}|${target.id}`;
       syncBoundLineEmployee();
-      App.toast = `✅ 已將您的 LINE 綁定為「${target.name}」，下次打開將自動載入您的個人班表與薪資！`;
+      App.lineLiff.justBound = true;
+      App.lineLiff.oaTipDismissed = false;
+      try { localStorage.removeItem('shiftcraft_oa_tip_dismissed_v1'); } catch (e) {}
+      App.toast = `✅ 已綁定為「${target.name}」並同步至雲端（換手機免重掃）！建議順手加入官方帳號方便在家請假。`;
       render();
-      pushStoreToCloud(App.multiStore.activeStoreId);
+      pushStoreToCloud(sId);
+      saveLineBindingToCloud(prof.userId, bId, sId, target.id, target.name);
     }
 
     function unbindLineUser() {
@@ -1825,16 +1980,20 @@
           delete e.linePictureUrl;
         }
       });
+      _lineBindingBackfilledKey = '';
+      App.lineLiff.justBound = false;
       App.liffRole = 'STAFF';
       App.toast = '已解除 LINE 員工綁定，請重新選擇您的姓名。';
       render();
       pushStoreToCloud(App.multiStore.activeStoreId);
+      deleteLineBindingFromCloud(prof.userId);
     }
 
     function unbindEmployeeLineByManager(empId) {
       const emp = App.employees.find(e => e.id === empId);
       if (!emp || !emp.lineUserId) return;
       if (!confirm(`確定要解除「${emp.name}（${emp.code}）」的 LINE 綁定嗎？解除後該員工下次從 LINE 開啟即可重新選擇身分。`)) return;
+      const oldUid = emp.lineUserId;
       delete emp.lineUserId;
       delete emp.lineDisplayName;
       delete emp.linePictureUrl;
@@ -1846,6 +2005,7 @@
       App.toast = `已解除「${emp.name}」的 LINE 綁定，該員工可重新於 LINE 選擇身分。`;
       render();
       pushStoreToCloud(App.multiStore.activeStoreId);
+      deleteLineBindingFromCloud(oldUid);
     }
 
     function getStoreLineInviteLink() {
@@ -1858,7 +2018,7 @@
       const link = getStoreLineInviteLink();
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(link).then(() => {
-          App.toast = `已複製「${App.storeSettings.name}」專屬 LINE 員工連結！傳到門市群組即可使用。`;
+          App.toast = `已複製「${App.storeSettings.name}」專屬 LINE 員工連結！傳到門市群組或 Keep 筆記即可隨時開啟。`;
           render();
         });
       } else {
@@ -1896,7 +2056,7 @@
             <div class="steps">
               <div><strong>①</strong> 打開手機 <strong>LINE</strong> 或相機掃描上方 QR Code</div>
               <div><strong>②</strong> 首次開啟請選擇自己的名字按「<strong>確認綁定</strong>」</div>
-              <div><strong>③</strong> 以後點選單即可一鍵 <strong>上下班打卡 / 看班表 / 請假 / 領薪資條</strong></div>
+              <div><strong>③</strong> 加入並<strong>釘選官方帳號</strong>，以後在家點選單即可 <strong>請假 / 看班表 / 領薪資條</strong>（換手機免重掃）</div>
             </div>
             <div class="foot">請張貼於門市員工休息室或打卡區 · 班匠 ShiftCraft AI</div>
           </div>
@@ -1908,6 +2068,7 @@
     function renderStoreQrModal() {
       const link = getStoreLineInviteLink();
       const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=12&data=${encodeURIComponent(link)}`;
+      const oaUrl = getLineOfficialAccountUrl();
       return `
         <div class="no-print fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4" onclick="App.multiStore.qrModalOpen=false;render()">
           <div class="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden" onclick="event.stopPropagation()">
@@ -1925,9 +2086,19 @@
               <div class="w-full rounded-xl bg-slate-50 border border-slate-200 p-3 text-left text-xs text-slate-700 space-y-1">
                 <div class="font-bold text-slate-900 mb-1">新員工報到 30 秒開通步驟：</div>
                 <div>1. 用手機 LINE 或相機掃描上方 QR Code</div>
-                <div>2. 選擇自己的名字按「確認綁定」</div>
-                <div>3. 立刻使用線上打卡、看班表、請假與電子薪資條</div>
+                <div>2. 選擇自己的名字按「確認綁定」（雲端自動記住，換手機免重掃）</div>
+                <div>3. 加入並釘選 LINE 官方帳號，在家點底部選單就能隨時請假</div>
               </div>
+              ${oaUrl ? `
+                <div class="w-full rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-left text-[11px] text-emerald-800 flex items-center justify-between gap-2">
+                  <span>✅ 已設定官方帳號引導連結，綁定後將自動引導員工加好友</span>
+                </div>
+              ` : `
+                <div class="w-full rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-left text-[11px] text-amber-800 flex items-center justify-between gap-2">
+                  <span>💡 尚未填寫 LINE 官方帳號 ID（填入後員工綁定即可一鍵加好友）</span>
+                  <button type="button" onclick="App.multiStore.qrModalOpen=false;App.mainTab='SETTINGS';App.storeSettings.subTab='BASIC';render()" class="shrink-0 px-2 py-1 rounded bg-amber-600 text-white font-bold cursor-pointer">去設定</button>
+                </div>
+              `}
               <div class="w-full text-[10px] text-slate-400 mono-num break-all px-2">${link}</div>
               <div class="w-full grid grid-cols-2 gap-2.5 pt-1">
                 <button onclick="copyStoreLineInviteLink()" class="h-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold cursor-pointer">📋 複製連結</button>
@@ -1984,10 +2155,45 @@
         App.lineLiff.loggedIn = liff.isLoggedIn();
         const urlParams = new URLSearchParams(window.location.search);
         const forceLiffView = urlParams.get('liff') === '1';
+        const urlBrand = urlParams.get('brand');
         const targetTab = urlParams.get('tab');
         if (targetTab && ['SCHED', 'ATTENDANCE', 'LIFF_LEAVE', 'PAYROLL'].includes(targetTab)) {
           App.mainTab = targetTab;
         }
+
+        const hydrateLineProfileAndBinding = async () => {
+          let prof = null;
+          try {
+            prof = await liff.getProfile();
+            App.lineLiff.profile = prof;
+          } catch (e) {}
+          try {
+            if (typeof liff.getFriendship === 'function') {
+              const fs = await liff.getFriendship();
+              App.lineLiff.isFriend = Boolean(fs && fs.friendFlag);
+            }
+          } catch (e) {}
+          if (prof && prof.userId && !urlBrand) {
+            // 換手機／清快取免重掃：若網址未帶 brand（例如點圖文選單開啟），從 Supabase 反查該 LINE userId 所屬品牌與門市
+            const binding = await lookupLineBindingFromCloud(prof.userId);
+            if (binding && binding.brand_id) {
+              const targetStore = binding.store_id || '';
+              const needReload = (
+                App.multiStore.brandId !== binding.brand_id ||
+                (targetStore && App.multiStore.activeStoreId !== targetStore) ||
+                App.cloud.status !== 'SYNCED'
+              );
+              App.multiStore.brandId = binding.brand_id;
+              if (targetStore) App.multiStore.activeStoreId = targetStore;
+              persistCloudStoreCfg(binding.brand_id, targetStore);
+              App.lineLiff.resolvedFromCloud = true;
+              if (needReload) {
+                await initCloudSync(false, { brandId: binding.brand_id, storeId: targetStore });
+              }
+            }
+          }
+          syncBoundLineEmployee();
+        };
 
         if (App.lineLiff.inClient || forceLiffView) {
           if (!liff.isLoggedIn()) {
@@ -1995,22 +2201,14 @@
             liff.login({ redirectUri: window.location.href });
             return;
           }
-          try {
-            const prof = await liff.getProfile();
-            App.lineLiff.profile = prof;
-            syncBoundLineEmployee();
-          } catch (e) {}
+          await hydrateLineProfileAndBinding();
           App.auth.loggedIn = true;
           App.auth.lastLoginAt = '剛剛 (LINE LIFF)';
           App.liffDrawerOpen = true;
           App.lineLiff.bootLoading = false;
           render();
         } else if (App.lineLiff.loggedIn) {
-          try {
-            const prof = await liff.getProfile();
-            App.lineLiff.profile = prof;
-            syncBoundLineEmployee();
-          } catch (e) {}
+          await hydrateLineProfileAndBinding();
           App.lineLiff.bootLoading = false;
           render();
         }
@@ -2038,6 +2236,7 @@
     let _sbChannel = null;
     let _cloudPushTimer = null;
     let _suppressCloudPush = false;
+    let _cloudSyncSeq = 0;
 
     const SUPABASE_SCHEMA_SQL = `create table if not exists public.shiftcraft_stores (
   brand_id text not null,
@@ -2058,7 +2257,38 @@ do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='shiftcraft_stores') then
     alter publication supabase_realtime add table public.shiftcraft_stores;
   end if;
-end $$;`;
+end $$;
+create table if not exists public.shiftcraft_line_bindings (
+  line_user_id text primary key,
+  brand_id text not null,
+  store_id text not null,
+  employee_id text not null,
+  employee_name text default '',
+  updated_at timestamptz not null default now()
+);
+grant all on table public.shiftcraft_line_bindings to anon, authenticated;
+alter table public.shiftcraft_line_bindings enable row level security;
+drop policy if exists "shiftcraft_line_bindings_allow_all" on public.shiftcraft_line_bindings;
+create policy "shiftcraft_line_bindings_allow_all" on public.shiftcraft_line_bindings for all using (true) with check (true);
+create or replace function public.liff_lookup_binding(p_line_user_id text)
+returns table (line_user_id text, brand_id text, store_id text, employee_id text, employee_name text, updated_at timestamptz)
+language sql security definer set search_path = public as $$
+  select b.line_user_id, b.brand_id, b.store_id, b.employee_id, b.employee_name, b.updated_at
+  from public.shiftcraft_line_bindings b where b.line_user_id = p_line_user_id limit 1;
+$$;
+create or replace function public.liff_save_binding(p_line_user_id text, p_brand_id text, p_store_id text, p_employee_id text, p_employee_name text default '')
+returns void language sql security definer set search_path = public as $$
+  insert into public.shiftcraft_line_bindings (line_user_id, brand_id, store_id, employee_id, employee_name, updated_at)
+  values (p_line_user_id, p_brand_id, p_store_id, p_employee_id, coalesce(p_employee_name, ''), now())
+  on conflict (line_user_id) do update set brand_id = excluded.brand_id, store_id = excluded.store_id, employee_id = excluded.employee_id, employee_name = excluded.employee_name, updated_at = now();
+$$;
+create or replace function public.liff_delete_binding(p_line_user_id text)
+returns void language sql security definer set search_path = public as $$
+  delete from public.shiftcraft_line_bindings where line_user_id = p_line_user_id;
+$$;
+grant execute on function public.liff_lookup_binding(text) to anon, authenticated;
+grant execute on function public.liff_save_binding(text, text, text, text, text) to anon, authenticated;
+grant execute on function public.liff_delete_binding(text) to anon, authenticated;`;
 
     function captureActiveStoreSnapshot() {
       return {
@@ -2365,7 +2595,7 @@ end $$;`;
           hasAuthSession = Boolean(sData && sData.session);
         } catch (ex) {}
         let err = null;
-        if (!hasAuthSession && !App.auth.loggedIn) {
+        if (!hasAuthSession) {
           const r = await _sbClient.rpc('liff_upsert_store', {
             p_brand_id: ms.brandId,
             p_store_id: sid,
@@ -2418,7 +2648,8 @@ end $$;`;
       }, 650);
     }
 
-    async function initCloudSync(showToast) {
+    async function initCloudSync(showToast, overrideCfg) {
+      const mySeq = ++_cloudSyncSeq;
       let cfg = null;
       try {
         const raw = localStorage.getItem(CLOUD_CFG_KEY);
@@ -2435,18 +2666,11 @@ end $$;`;
       App.cloud.url = cfg.url;
       App.cloud.anonKey = cfg.anonKey;
       const urlParams = new URLSearchParams(window.location.search);
-      const urlBrand = urlParams.get('brand');
-      const urlStore = urlParams.get('store');
+      const urlBrand = (overrideCfg && overrideCfg.brandId) || urlParams.get('brand');
+      const urlStore = (overrideCfg && overrideCfg.storeId) || urlParams.get('store');
       if (urlBrand) {
         App.multiStore.brandId = urlBrand;
-        try {
-          localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify({
-            url: cfg.url,
-            anonKey: cfg.anonKey,
-            brandId: urlBrand,
-            storeId: urlStore || (cfg && cfg.storeId) || '',
-          }));
-        } catch (e) {}
+        persistCloudStoreCfg(urlBrand, urlStore || (cfg && cfg.storeId) || '');
       } else if (cfg.brandId) {
         App.multiStore.brandId = cfg.brandId;
       }
@@ -2466,10 +2690,11 @@ end $$;`;
           const { data: sData } = await _sbClient.auth.getSession();
           hasAuthSession = Boolean(sData && sData.session);
         } catch (ex) {}
+        if (mySeq !== _cloudSyncSeq) return;
 
         let data = null;
         let error = null;
-        if (!hasAuthSession && !App.auth.loggedIn) {
+        if (!hasAuthSession) {
           const rpcRes = await _sbClient.rpc('liff_get_stores', { p_brand_id: App.multiStore.brandId });
           if (!rpcRes.error && Array.isArray(rpcRes.data)) {
             data = rpcRes.data;
@@ -2491,6 +2716,7 @@ end $$;`;
           data = res.data;
           error = res.error;
         }
+        if (mySeq !== _cloudSyncSeq) return;
         if (error) throw error;
 
         if (data && data.length > 0) {
@@ -2499,6 +2725,7 @@ end $$;`;
           for (const r of data) {
             App.multiStore.storeData[r.store_id] = await decryptStorePayload(r.payload, App.multiStore.brandId);
           }
+          if (mySeq !== _cloudSyncSeq) return;
           const savedStore = urlStore || (cfg && cfg.storeId) || '';
           const pickId = (savedStore && App.multiStore.storeData[savedStore]) ? savedStore : data[0].store_id;
           App.multiStore.activeStoreId = pickId;
@@ -2517,6 +2744,7 @@ end $$;`;
             await pushStoreToCloud(stMeta.id);
           }
         }
+        if (mySeq !== _cloudSyncSeq) return;
 
         // 訂閱即時同步頻道（手機 LINE 打卡/請假 → 電腦後台 1 秒同步）
         _sbChannel = _sbClient
@@ -3420,11 +3648,13 @@ end $$;`;
       if (App.hr.editingId) {
         const idx = App.employees.findIndex(x => x.id === App.hr.editingId);
         if (idx >= 0) {
+          const prevLineUid = App.employees[idx] && App.employees[idx].lineUserId;
           const updated = { ...App.employees[idx], ...JSON.parse(JSON.stringify(f)) };
           if (isResigned) {
             delete updated.lineUserId;
             delete updated.lineDisplayName;
             delete updated.linePictureUrl;
+            if (prevLineUid) deleteLineBindingFromCloud(prevLineUid);
             (App.storeSettings.admins || []).forEach(a => {
               if ((a.employeeId && a.employeeId === updated.id) || (a.name && a.name.trim() === (updated.name || '').trim())) {
                 a.active = false;
@@ -6971,6 +7201,19 @@ end $$;`;
                 <div class="sm:col-span-2"><label class="block font-semibold text-slate-600 mb-1">門市地址</label><input value="${st.address}" oninput="App.storeSettings.address=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200" /></div>
                 <div><label class="block font-semibold text-slate-600 mb-1">聯絡電話</label><input value="${st.phone}" oninput="App.storeSettings.phone=this.value" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num" /></div>
               </div>
+              <div class="p-4 rounded-xl bg-emerald-50/60 border border-emerald-200/80 space-y-2">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div class="font-bold text-slate-900">LINE 官方帳號引導設定（員工在家請假／圖文選單入口）</div>
+                    <div class="text-[11px] text-slate-600 mt-0.5">填入貴店或品牌的 LINE 官方帳號 ID（例如 <span class="mono-num font-semibold">@shiftcraft</span>）或加好友短網址（例如 <span class="mono-num font-semibold">https://lin.ee/xxxx</span>），員工綁定完成後就會顯示「加入官方帳號（方便在家請假）」一鍵按鈕。</div>
+                  </div>
+                  ${getLineOfficialAccountUrl() ? `<span class="px-2.5 py-1 rounded-full bg-white border border-emerald-200 text-emerald-700 font-bold text-[11px]">✅ 已啟用一鍵加好友</span>` : `<span class="px-2.5 py-1 rounded-full bg-white border border-amber-200 text-amber-700 font-semibold text-[11px]">選填（未填將引導存 Keep）</span>`}
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input value="${st.lineOaId||''}" placeholder="例：@123abcde 或 https://lin.ee/xxxxxxx" oninput="App.storeSettings.lineOaId=this.value.trim()" onblur="render()" class="flex-1 min-w-[220px] h-9 px-3 rounded-lg border border-emerald-200 bg-white mono-num font-semibold" />
+                  <button type="button" onclick="App.toast='已儲存 LINE 官方帳號引導設定並同步至員工端。';render()" class="h-9 px-3.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">套用</button>
+                </div>
+              </div>
               ${(() => {
                 const ov = getWeeklyFixedOverheadCost();
                 return `
@@ -8209,6 +8452,52 @@ end $$;`;
 
             <div class="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
               ${isMgr ? renderLineManagerApprovalContent() : `
+              ${(() => {
+                const isFriend = App.lineLiff && App.lineLiff.isFriend;
+                const justBound = Boolean(App.lineLiff && App.lineLiff.justBound);
+                const oaDismissed = Boolean(App.lineLiff && App.lineLiff.oaTipDismissed);
+                if (justBound) {
+                  return `
+                    <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-2.5 shadow-xs">
+                      <div class="flex items-start justify-between gap-2">
+                        <div>
+                          <div class="font-bold text-emerald-900 text-xs">${isFriend === true ? '🎉 綁定完成！建議釘選官方帳號方便在家請假' : '🎉 綁定完成！馬上加入官方帳號（免重掃 QR Code）'}</div>
+                          <p class="text-[11px] text-emerald-800/90 mt-1 leading-relaxed">
+                            ${isFriend === true
+                              ? '您已加入官方帳號，建議長按聊天室「釘選置頂」，以後在家點底部選單就能請假、看班表；換手機系統也會自動辨識。'
+                              : '關掉此視窗後若想在家請假，請先加入並「釘選」官方帳號，以後點底部選單即可隨時開啟（換手機免重掃）。'}
+                          </p>
+                        </div>
+                        <button type="button" onclick="dismissLineOaTip()" class="shrink-0 text-emerald-700/70 hover:text-emerald-900 font-bold cursor-pointer">✕</button>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        ${isFriend !== true ? `
+                          <button type="button" onclick="openLineOfficialAccountGuide()" class="flex-1 min-w-[180px] h-9 px-3 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-xs cursor-pointer shadow-xs">
+                            ➕ 加入官方帳號（方便在家請假）
+                          </button>
+                        ` : ''}
+                        <button type="button" onclick="copyStoreLineInviteLink()" class="h-9 px-3 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-bold text-[11px] cursor-pointer">
+                          📋 複製入口存 Keep
+                        </button>
+                        <button type="button" onclick="dismissLineOaTip()" class="h-9 px-2.5 rounded-lg text-emerald-700 hover:bg-emerald-100/70 font-semibold text-[11px] cursor-pointer">
+                          我知道了
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                }
+                if (isFriend !== true && !oaDismissed) {
+                  return `
+                    <div class="bg-white border border-emerald-200 rounded-xl p-2.5 flex items-center justify-between gap-2 shadow-xs">
+                      <button type="button" onclick="openLineOfficialAccountGuide()" class="flex-1 py-1.5 px-2.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-[11px] text-center cursor-pointer">
+                        ➕ 加入官方帳號（方便在家請假）
+                      </button>
+                      <button type="button" onclick="dismissLineOaTip()" title="已加入官方帳號，關閉提示" class="shrink-0 w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-600 font-bold cursor-pointer">✕</button>
+                    </div>
+                  `;
+                }
+                return '';
+              })()}
               ${mode === 'PAYROLL' && slip ? `
                 <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
                   <div class="flex items-center justify-between">
@@ -9078,6 +9367,9 @@ end $$;`;
       '預排劃休': { en: 'Off Pref', ja: '希望休' },
       '今日': { en: 'Today', ja: '本日' },
       '未排班': { en: 'Unscheduled', ja: 'シフト未定' },
+      '➕ 加入官方帳號（方便在家請假）': { en: '➕ Add Official Account (for Home Leave)', ja: '➕ 公式アカウントを追加（自宅から休暇申請）' },
+      '📋 複製入口存 Keep': { en: '📋 Copy Link to Keep', ja: '📋 リンクをKeepへコピー' },
+      '我知道了': { en: 'Got it', ja: '了解しました' },
 
       // Store Settings
       '基本資料與店休日': { en: 'Store Info & Holidays', ja: '基本情報・休業日' },

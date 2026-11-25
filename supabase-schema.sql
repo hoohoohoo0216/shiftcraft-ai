@@ -62,3 +62,81 @@ create policy "shiftcraft_accounts_allow_all"
   for all
   using (true)
   with check (true);
+
+-- 3. LINE 員工跨裝置綁定索引（換手機／清快取點圖文選單免重掃 QR Code）
+create table if not exists public.shiftcraft_line_bindings (
+  line_user_id text primary key,
+  brand_id text not null,
+  store_id text not null,
+  employee_id text not null,
+  employee_name text default '',
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_shiftcraft_line_bindings_brand_store
+  on public.shiftcraft_line_bindings (brand_id, store_id);
+
+grant all on table public.shiftcraft_line_bindings to anon, authenticated;
+alter table public.shiftcraft_line_bindings enable row level security;
+
+drop policy if exists "shiftcraft_line_bindings_allow_all" on public.shiftcraft_line_bindings;
+create policy "shiftcraft_line_bindings_allow_all"
+  on public.shiftcraft_line_bindings
+  for all
+  using (true)
+  with check (true);
+
+create or replace function public.liff_lookup_binding(p_line_user_id text)
+returns table (
+  line_user_id text,
+  brand_id text,
+  store_id text,
+  employee_id text,
+  employee_name text,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select b.line_user_id, b.brand_id, b.store_id, b.employee_id, b.employee_name, b.updated_at
+  from public.shiftcraft_line_bindings b
+  where b.line_user_id = p_line_user_id
+  limit 1;
+$$;
+
+create or replace function public.liff_save_binding(
+  p_line_user_id text,
+  p_brand_id text,
+  p_store_id text,
+  p_employee_id text,
+  p_employee_name text default ''
+)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  insert into public.shiftcraft_line_bindings (line_user_id, brand_id, store_id, employee_id, employee_name, updated_at)
+  values (p_line_user_id, p_brand_id, p_store_id, p_employee_id, coalesce(p_employee_name, ''), now())
+  on conflict (line_user_id) do update
+    set brand_id = excluded.brand_id,
+        store_id = excluded.store_id,
+        employee_id = excluded.employee_id,
+        employee_name = excluded.employee_name,
+        updated_at = now();
+$$;
+
+create or replace function public.liff_delete_binding(p_line_user_id text)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from public.shiftcraft_line_bindings
+  where line_user_id = p_line_user_id;
+$$;
+
+grant execute on function public.liff_lookup_binding(text) to anon, authenticated;
+grant execute on function public.liff_save_binding(text, text, text, text, text) to anon, authenticated;
+grant execute on function public.liff_delete_binding(text) to anon, authenticated;
