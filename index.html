@@ -732,6 +732,8 @@
         draftDateFrom: '',
         draftDateTo: '',
         searchDate: '',
+        punchBusy: false,
+        geoCheck: { status: 'IDLE', distanceM: null, accuracyM: null, lat: null, lng: null, publicIp: '', checkedAt: '', errorMsg: '' },
         draft: { date: getTaipeiTodayStr(), type: 'MISSING_OUT', reqIn: '08:30', reqOut: '17:05', witnessId: 'emp-01', reason: '' },
         logs: [
           { id: 'log-1', employeeId: 'emp-01', date: '2026-11-21', scheduled: '08:30–17:00', clockIn: '08:26', clockOut: '17:04', method: 'LINE GPS (8m)', lateM: 0, status: 'NORMAL', note: '準時出勤' },
@@ -778,7 +780,10 @@
           { id: 'sc-2', date: '2027-02-16', reason: '農曆除夕店休（依勞基法給薪）' },
         ],
         newSpecialDate: '', newSpecialReason: '',
-        lat: 25.05268, lng: 121.52036, radiusMeters: 50, wifiSsid: 'ShanBei_Nanxi_5G', wifiBssid: 'A4:2B:8C:19:4F:02', allowWifiOnly: true,
+        lat: 25.05268, lng: 121.52036, radiusMeters: 50,
+        geoFenceEnabled: true,
+        wifiSsid: 'ShanBei_Nanxi_5G', wifiBssid: '', storePublicIp: '', allowWifiIpFallback: true, allowWifiOnly: true,
+        geoPasteDraft: '', geoBusy: false, geoTestResult: null,
         activeRole: 'OWNER',
         permissions: {
           OWNER:         { schedEdit: true,  storeHours: true,  hrDocs: true,  payrollManage: true,  approveLeave: true,  approvePunch: true,  exportCsv: true,  settingsAdmin: true  },
@@ -1353,6 +1358,8 @@
       App.storeSettings.nhiInsuranceUnit = '';
       App.storeSettings.wifiSsid = '';
       App.storeSettings.wifiBssid = '';
+      App.storeSettings.storePublicIp = '';
+      App.storeSettings.geoTestResult = null;
       App.storeSettings.specialClosedDates = [];
       App.storeSettings.peakHours = [];
       App.storeSettings.monthlyFixedOverhead = 0;
@@ -1402,6 +1409,9 @@
       App.storeSettings.activeRole = 'OWNER';
       App.storeSettings.address = '';
       App.storeSettings.wifiSsid = '';
+      App.storeSettings.wifiBssid = '';
+      App.storeSettings.storePublicIp = '';
+      App.storeSettings.geoTestResult = null;
       App.storeSettings.workstations = [];
       if (typeof syncStationsCatalog === 'function') syncStationsCatalog();
       App.storeSettings.admins = [
@@ -4370,30 +4380,208 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       return mins <= 0 ? '—' : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2,'0')}m`;
     }
 
-    function doLiveClockPunch(kind) {
+    function calcDistanceMeters(lat1, lng1, lat2, lng2) {
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const R = 6371000;
+      const dLat = toRad(lat2 - lat1);
+      const dLng = toRad(lng2 - lng1);
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function formatDistanceZh(meters) {
+      if (meters == null || !Number.isFinite(meters)) return '未知';
+      const m = Math.round(meters);
+      return m >= 1000 ? `${(m / 1000).toFixed(2)} 公里` : `${m} 公尺`;
+    }
+
+    function getAllowedStorePublicIps() {
+      const raw = String((App.storeSettings && App.storeSettings.storePublicIp) || '').trim();
+      if (!raw) return [];
+      return raw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+    }
+
+    function getCurrentPositionPromise() {
+      return new Promise((resolve) => {
+        if (typeof navigator === 'undefined' || !navigator.geolocation || typeof navigator.geolocation.getCurrentPosition !== 'function') {
+          resolve({ ok: false, code: 'UNSUPPORTED', errorMsg: '此裝置或瀏覽器不支援 GPS 定位功能。' });
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const c = pos && pos.coords;
+            if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) {
+              resolve({ ok: false, code: 'INVALID', errorMsg: '無法解析手機 GPS 座標，請重試。' });
+              return;
+            }
+            resolve({ ok: true, lat: c.latitude, lng: c.longitude, accuracy: Number(c.accuracy) || 0 });
+          },
+          (err) => {
+            const code = err && err.code;
+            let errorMsg = '無法取得手機定位，請確認已開啟定位權限後再試。';
+            if (code === 1) errorMsg = '手機未允許位置存取權限！請到手機設定開啟 LINE／瀏覽器定位權限後再打卡。';
+            else if (code === 2) errorMsg = '目前無法偵測 GPS 訊號（請移至訊號較佳處或開啟精準位置）。';
+            else if (code === 3) errorMsg = 'GPS 定位逾時，請重新點擊「重新定位」或再次打卡。';
+            resolve({ ok: false, code: code || 'ERR', errorMsg });
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+        );
+      });
+    }
+
+    async function fetchCurrentPublicIp() {
+      const endpoints = [
+        'https://api.ipify.org?format=json',
+        'https://api64.ipify.org?format=json',
+      ];
+      for (const url of endpoints) {
+        try {
+          const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const timer = ctrl ? setTimeout(() => ctrl.abort(), 4000) : null;
+          const res = await fetch(url, ctrl ? { signal: ctrl.signal, cache: 'no-store' } : { cache: 'no-store' });
+          if (timer) clearTimeout(timer);
+          if (res && res.ok) {
+            const j = await res.json();
+            if (j && j.ip) return String(j.ip).trim();
+          }
+        } catch (e) {}
+      }
+      return '';
+    }
+
+    async function verifyPunchLocation() {
+      const st = App.storeSettings || {};
+      const nowTime = getTaipeiTimeHHMM();
+      if (st.geoFenceEnabled === false) {
+        App.attendance.geoCheck = {
+          status: 'OK', distanceM: null, accuracyM: null, lat: null, lng: null,
+          publicIp: '', checkedAt: nowTime, errorMsg: '',
+        };
+        return { allowed: true, method: 'LINE 打卡（未啟用圍籬）' };
+      }
+
+      const stLat = Number(st.lat);
+      const stLng = Number(st.lng);
+      const radius = Math.max(10, Number(st.radiusMeters) || 50);
+      if (!Number.isFinite(stLat) || !Number.isFinite(stLng) || (stLat === 0 && stLng === 0)) {
+        const errorMsg = '門市尚未設定 GPS 座標，請通知店長至「店鋪與權限 → GPS 圍籬與 Wi-Fi 打卡」完成設定。';
+        App.attendance.geoCheck = { status: 'ERROR', distanceM: null, accuracyM: null, lat: null, lng: null, publicIp: '', checkedAt: nowTime, errorMsg };
+        return { allowed: false, errorMsg };
+      }
+
+      App.attendance.geoCheck = { ...(App.attendance.geoCheck || {}), status: 'CHECKING', errorMsg: '' };
+      render();
+
+      const pos = await getCurrentPositionPromise();
+      const allowedIps = getAllowedStorePublicIps();
+      const wifiFallbackOn = st.allowWifiIpFallback !== false && allowedIps.length > 0;
+      const wifiHint = (wifiFallbackOn && st.wifiSsid) ? `（若已在店內但 GPS 漂移，請改連門市 Wi-Fi「${st.wifiSsid}」後再試）` : '';
+
+      if (pos.ok) {
+        const distM = Math.round(calcDistanceMeters(pos.lat, pos.lng, stLat, stLng));
+        const accM = Math.round(pos.accuracy || 0);
+        if (distM <= radius) {
+          App.attendance.geoCheck = {
+            status: 'OK', distanceM: distM, accuracyM: accM, lat: pos.lat, lng: pos.lng,
+            publicIp: '', checkedAt: getTaipeiTimeHHMM(), errorMsg: '',
+          };
+          return { allowed: true, method: `LINE GPS (${distM}m)`, distanceM: distM, accuracyM: accM };
+        }
+        // 超出 GPS 圍籬：若有設定門市 Wi-Fi 外網 IP，進行輔助驗證
+        if (wifiFallbackOn) {
+          const myIp = await fetchCurrentPublicIp();
+          if (myIp && allowedIps.includes(myIp)) {
+            App.attendance.geoCheck = {
+              status: 'WIFI_OK', distanceM: distM, accuracyM: accM, lat: pos.lat, lng: pos.lng,
+              publicIp: myIp, checkedAt: getTaipeiTimeHHMM(), errorMsg: '',
+            };
+            return { allowed: true, method: `門市 Wi-Fi IP 驗證 (GPS ${distM}m)`, distanceM: distM, publicIp: myIp };
+          }
+        }
+        const errorMsg = `您目前距離門市 ${formatDistanceZh(distM)}${accM ? `（定位誤差 ±${accM}m）` : ''}，超出允許圍籬 ${radius}m，無法打卡！${wifiHint}`;
+        App.attendance.geoCheck = {
+          status: 'OUT_OF_RANGE', distanceM: distM, accuracyM: accM, lat: pos.lat, lng: pos.lng,
+          publicIp: '', checkedAt: getTaipeiTimeHHMM(), errorMsg,
+        };
+        return { allowed: false, distanceM: distM, accuracyM: accM, errorMsg };
+      }
+
+      // GPS 取得失敗：若有設定門市 Wi-Fi 外網 IP，進行輔助驗證
+      if (wifiFallbackOn) {
+        const myIp = await fetchCurrentPublicIp();
+        if (myIp && allowedIps.includes(myIp)) {
+          App.attendance.geoCheck = {
+            status: 'WIFI_OK', distanceM: null, accuracyM: null, lat: null, lng: null,
+            publicIp: myIp, checkedAt: getTaipeiTimeHHMM(), errorMsg: '',
+          };
+          return { allowed: true, method: '門市 Wi-Fi IP 驗證', publicIp: myIp };
+        }
+      }
+
+      const errorMsg = `${pos.errorMsg}${wifiHint}`;
+      App.attendance.geoCheck = {
+        status: 'ERROR', distanceM: null, accuracyM: null, lat: null, lng: null,
+        publicIp: '', checkedAt: getTaipeiTimeHHMM(), errorMsg,
+      };
+      return { allowed: false, errorMsg };
+    }
+
+    async function refreshEmployeeGeoStatus() {
+      if (App.attendance.punchBusy) return;
+      App.attendance.punchBusy = true;
+      try {
+        const ver = await verifyPunchLocation();
+        if (ver.allowed) {
+          App.toast = ver.distanceM != null
+            ? `✅ 定位成功：距離門市 ${formatDistanceZh(ver.distanceM)}，在圍籬範圍內可正常打卡。`
+            : `✅ 門市 Wi-Fi 網路驗證通過，可正常打卡。`;
+        } else {
+          App.toast = `❌ ${ver.errorMsg}`;
+        }
+      } finally {
+        App.attendance.punchBusy = false;
+        render();
+      }
+    }
+
+    async function doLiveClockPunch(kind) {
+      if (App.attendance.punchBusy) return;
       const emp = App.employees.find(e => e.id === App.attendance.liffEmpId) || App.employees[0];
       if (!emp) return;
-      const twNow = getTaipeiNowParts();
-      const hhmm = twNow.hhmm;
-      const today = twNow.ymd;
-      const todayShift = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === today);
-      const todaySegs = getShiftSegments(todayShift);
-      const scheduledLabel = todaySegs.length ? todaySegs.map(g => g.label).join(' / ') : '未排班';
-      let existing = App.attendance.logs.find(l => l.employeeId === emp.id && l.date === today);
-      if (!existing) {
-        App.attendance.logs.unshift({
-          id: 'log-' + Date.now(), employeeId: emp.id, date: today, scheduled: scheduledLabel,
-          clockIn: kind === 'IN' ? hhmm : '', clockOut: kind === 'OUT' ? hhmm : '',
-          method: 'LINE GPS (12m) + Wi-Fi', lateM: 0, status: kind === 'IN' ? 'NORMAL' : 'MISSING_IN', note: `今日 ${hhmm} 打卡`
-        });
-      } else {
-        if (kind === 'IN') existing.clockIn = hhmm;
-        if (kind === 'OUT') existing.clockOut = hhmm;
-        if (existing.clockIn && existing.clockOut) existing.status = existing.lateM > 0 ? 'LATE' : 'NORMAL';
-      }
-      App.toast = `${emp.name} 已於 ${hhmm} 完成${kind === 'IN' ? '上班打卡' : '下班簽退'}（GPS 12m 驗證通過）。`;
+      App.attendance.punchBusy = true;
       render();
-      pushStoreToCloud(App.multiStore.activeStoreId);
+      try {
+        const ver = await verifyPunchLocation();
+        if (!ver.allowed) {
+          App.toast = `❌ 打卡失敗：${ver.errorMsg}`;
+          return;
+        }
+        const twNow = getTaipeiNowParts();
+        const hhmm = twNow.hhmm;
+        const today = twNow.ymd;
+        const todayShift = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === today);
+        const todaySegs = getShiftSegments(todayShift);
+        const scheduledLabel = todaySegs.length ? todaySegs.map(g => g.label).join(' / ') : '未排班';
+        let existing = App.attendance.logs.find(l => l.employeeId === emp.id && l.date === today);
+        if (!existing) {
+          App.attendance.logs.unshift({
+            id: 'log-' + Date.now(), employeeId: emp.id, date: today, scheduled: scheduledLabel,
+            clockIn: kind === 'IN' ? hhmm : '', clockOut: kind === 'OUT' ? hhmm : '',
+            method: ver.method, lateM: 0, status: kind === 'IN' ? 'NORMAL' : 'MISSING_IN', note: `今日 ${hhmm} 打卡`
+          });
+        } else {
+          if (kind === 'IN') existing.clockIn = hhmm;
+          if (kind === 'OUT') existing.clockOut = hhmm;
+          existing.method = ver.method;
+          if (existing.clockIn && existing.clockOut) existing.status = existing.lateM > 0 ? 'LATE' : 'NORMAL';
+        }
+        App.toast = `${emp.name} 已於 ${hhmm} 完成${kind === 'IN' ? '上班打卡' : '下班簽退'}（${ver.method}）。`;
+        pushStoreToCloud(App.multiStore.activeStoreId);
+      } finally {
+        App.attendance.punchBusy = false;
+        render();
+      }
     }
 
     function prefillMissedPunch(empId, date, missingType, existingIn, existingOut) {
@@ -4768,12 +4956,6 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       { key: 'exportCsv', label: '匯出勞檢出勤 CSV', hint: '下載勞基法逐日出勤備查檔' },
       { key: 'settingsAdmin', label: '店鋪座標與權限設定', hint: '調整 GPS 圍籬與管理角色指派' },
     ];
-    const STORE_COORD_PRESETS = [
-      { label: '台北・中山南西商圈', lat: 25.05268, lng: 121.52036, addr: '台北市中山區南京西路18巷6號1樓' },
-      { label: '台北・信義威秀商圈', lat: 25.03582, lng: 121.56715, addr: '台北市信義區松壽路20號1樓' },
-      { label: '台中・逢甲文華商圈', lat: 24.17954, lng: 120.64672, addr: '台中市西屯區福星路420號' },
-      { label: '高雄・漢神巨蛋商圈', lat: 22.66918, lng: 120.30224, addr: '高雄市左營區博愛二路777號' },
-    ];
     const WS_COLOR_PALETTE = {
       TEAL: { bg: '#CCFBF1', text: '#0F766E', label: '翠綠' }, AMBER: { bg: '#FEF3C7', text: '#B45309', label: '暖琥珀' },
       ROSE: { bg: '#FFE4E6', text: '#BE123C', label: '玫紅' }, INDIGO: { bg: '#E0E7FF', text: '#3730A3', label: '靛藍' },
@@ -4854,10 +5036,94 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       if (target && App.sched.dayConfig[target.date]) App.sched.dayConfig[target.date].isClosed = false;
       render();
     }
-    function applyPresetCoord(label, lat, lng, addr) {
-      App.storeSettings.lat = lat; App.storeSettings.lng = lng; App.storeSettings.address = addr;
-      App.toast = `已套用「${label}」GPS 座標並同步打卡圍籬。`;
+    function parseAndApplyGoogleMapsCoord(rawText) {
+      const s = String(rawText || App.storeSettings.geoPasteDraft || '').trim();
+      if (!s) { App.toast = '請先貼上 Google Maps 座標（例：25.058494, 121.520500）或地圖網址。'; render(); return; }
+      let lat = null, lng = null;
+      const mBang = s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+      const mAt = s.match(/@(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+      const mPair = s.match(/(-?\d{1,2}\.\d{3,})\s*[,\s]\s*(-?\d{1,3}\.\d{3,})/);
+      if (mBang) { lat = Number(mBang[1]); lng = Number(mBang[2]); }
+      else if (mAt) { lat = Number(mAt[1]); lng = Number(mAt[2]); }
+      else if (mPair) { lat = Number(mPair[1]); lng = Number(mPair[2]); }
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        App.toast = '無法解析座標，請從 Google Maps 對門市位置按右鍵複製「緯度, 經度」（例：25.058494, 121.520500）。';
+        render();
+        return;
+      }
+      App.storeSettings.lat = Number(lat.toFixed(6));
+      App.storeSettings.lng = Number(lng.toFixed(6));
+      App.storeSettings.geoPasteDraft = '';
+      App.storeSettings.geoTestResult = null;
+      App.toast = `✅ 已套用座標（${App.storeSettings.lat.toFixed(6)}, ${App.storeSettings.lng.toFixed(6)}）並同步至打卡圍籬。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+    }
+
+    async function captureCurrentStoreGps() {
+      if (App.storeSettings.geoBusy) return;
+      App.storeSettings.geoBusy = true;
+      render();
+      try {
+        const pos = await getCurrentPositionPromise();
+        if (!pos.ok) {
+          App.toast = `❌ ${pos.errorMsg}`;
+          return;
+        }
+        App.storeSettings.lat = Number(pos.lat.toFixed(6));
+        App.storeSettings.lng = Number(pos.lng.toFixed(6));
+        App.storeSettings.geoTestResult = null;
+        App.toast = `✅ 已抓取目前所在 GPS 座標（${App.storeSettings.lat.toFixed(6)}, ${App.storeSettings.lng.toFixed(6)}，誤差 ±${Math.round(pos.accuracy)}m）。`;
+        pushStoreToCloud(App.multiStore.activeStoreId);
+      } finally {
+        App.storeSettings.geoBusy = false;
+        render();
+      }
+    }
+
+    async function testCurrentGeoFence() {
+      if (App.storeSettings.geoBusy) return;
+      App.storeSettings.geoBusy = true;
+      render();
+      try {
+        const ver = await verifyPunchLocation();
+        App.storeSettings.geoTestResult = {
+          allowed: ver.allowed,
+          method: ver.method || '',
+          distanceM: ver.distanceM ?? null,
+          accuracyM: ver.accuracyM ?? null,
+          errorMsg: ver.errorMsg || '',
+          testedAt: getTaipeiTimeHHMM(),
+        };
+        App.toast = ver.allowed
+          ? `✅ 圍籬測試通過（${ver.method}），此位置可以打卡。`
+          : `❌ 圍籬測試未通過：${ver.errorMsg}`;
+      } finally {
+        App.storeSettings.geoBusy = false;
+        render();
+      }
+    }
+
+    async function detectAndSetStorePublicIp() {
+      if (App.storeSettings.geoBusy) return;
+      App.storeSettings.geoBusy = true;
+      render();
+      try {
+        const ip = await fetchCurrentPublicIp();
+        if (!ip) {
+          App.toast = '❌ 無法取得目前外網 IP，請確認網路連線正常後再試。';
+          return;
+        }
+        const cur = getAllowedStorePublicIps();
+        if (!cur.includes(ip)) cur.push(ip);
+        App.storeSettings.storePublicIp = cur.join(', ');
+        App.storeSettings.allowWifiIpFallback = true;
+        App.toast = `✅ 已偵測並加入目前網路 IP（${ip}）為門市 Wi-Fi 允許清單！`;
+        pushStoreToCloud(App.multiStore.activeStoreId);
+      } finally {
+        App.storeSettings.geoBusy = false;
+        render();
+      }
     }
     function toggleRolePerm(roleCode, permKey) {
       if (roleCode === 'OWNER') { App.toast = '老闆保留最高管理權限，無法關閉。'; render(); return; }
@@ -7385,24 +7651,147 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
             </div>
           ` : ''}
 
-          ${st.subTab === 'GEO' ? `
-            <div class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-4 text-xs">
-              <div class="flex justify-between items-center border-b border-slate-100 pb-3">
-                <div><h2 class="text-sm font-bold text-slate-900">GPS 地理圍籬與 Wi-Fi 打卡驗證</h2><p class="text-slate-500">LINE LIFF 打卡時即時比對座標距離與門市 Wi-Fi</p></div>
+          ${st.subTab === 'GEO' ? (() => {
+            const geoEnabled = st.geoFenceEnabled !== false;
+            const wifiFallbackOn = st.allowWifiIpFallback !== false;
+            const allowedIps = getAllowedStorePublicIps();
+            const latNum = Number(st.lat) || 0;
+            const lngNum = Number(st.lng) || 0;
+            const gmapsUrl = `https://www.google.com/maps?q=${latNum},${lngNum}`;
+            const testRes = st.geoTestResult;
+            return `
+            <div class="bg-white border border-[var(--border)] rounded-xl p-5 space-y-5 text-xs">
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h2 class="text-sm font-bold text-slate-900">GPS 地理圍籬與門市 Wi-Fi 打卡驗證</h2>
+                  <p class="text-slate-500 mt-0.5">員工在 LINE 按下「上班打卡／下班簽退」時，系統會即時比對手機真實 GPS 距離與門市網路，超出範圍直接擋下無法打卡。</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border ${geoEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-slate-50 text-slate-600'} font-bold cursor-pointer">
+                    <input type="checkbox" ${geoEnabled ? 'checked' : ''} onchange="App.storeSettings.geoFenceEnabled=this.checked;App.toast=this.checked?'已啟用 GPS 圍籬打卡驗證。':'已暫時停用 GPS 圍籬驗證（員工於任何地點皆可打卡）。';render();pushStoreToCloud(App.multiStore.activeStoreId)" class="w-4 h-4 accent-[#0F766E] cursor-pointer" />
+                    <span>${geoEnabled ? '圍籬驗證：已啟用' : '圍籬驗證：已停用'}</span>
+                  </label>
+                  <button type="button" onclick="App.toast='已儲存 GPS 圍籬與 Wi-Fi 設定並同步至雲端。';render();pushStoreToCloud(App.multiStore.activeStoreId)" class="h-8 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">儲存設定</button>
+                </div>
               </div>
-              <div class="flex flex-wrap gap-1.5">
-                ${STORE_COORD_PRESETS.map(loc => `<button type="button" onclick="applyPresetCoord('${loc.label}', ${loc.lat}, ${loc.lng}, '${loc.addr}')" class="h-7 px-3 rounded-full border border-slate-200 bg-slate-50 hover:border-[#0F766E] font-semibold cursor-pointer">${loc.label}</button>`).join('')}
+
+              <!-- 區塊 1：門市 GPS 座標與圍籬半徑 -->
+              <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="font-bold text-slate-900 text-xs">① 門市 GPS 座標與允許半徑</div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" onclick="captureCurrentStoreGps()" ${st.geoBusy ? 'disabled' : ''} class="h-8 px-3 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-50 text-white font-bold cursor-pointer">
+                      ${st.geoBusy ? '⏳ 定位中…' : '📍 抓取目前所在位置'}
+                    </button>
+                    <a href="${gmapsUrl}" target="_blank" rel="noopener" class="inline-flex items-center h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold">
+                      🗺️ Google 地圖檢查紅針
+                    </a>
+                    <button type="button" onclick="testCurrentGeoFence()" ${st.geoBusy ? 'disabled' : ''} class="h-8 px-3 rounded-lg border border-teal-300 bg-teal-50 hover:bg-teal-100 disabled:opacity-50 text-[#0F766E] font-bold cursor-pointer">
+                      🧪 測試我現在能否打卡
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 快速貼上 Google Maps 座標 -->
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    value="${st.geoPasteDraft || ''}"
+                    oninput="App.storeSettings.geoPasteDraft=this.value"
+                    placeholder="快速貼上 Google Maps 座標（例：25.058494, 121.520500）或地圖網址"
+                    class="flex-1 min-w-[240px] h-9 px-3 rounded-lg border border-slate-200 bg-white mono-num"
+                  />
+                  <button type="button" onclick="parseAndApplyGoogleMapsCoord()" class="h-9 px-3.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-bold cursor-pointer">套用座標</button>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label class="block font-semibold text-slate-600 mb-1">緯度 (Latitude)</label>
+                    <input type="number" step="0.000001" value="${latNum}" onchange="App.storeSettings.lat=Number(this.value)||0;App.storeSettings.geoTestResult=null;render();pushStoreToCloud(App.multiStore.activeStoreId)" class="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-600 mb-1">經度 (Longitude)</label>
+                    <input type="number" step="0.000001" value="${lngNum}" onchange="App.storeSettings.lng=Number(this.value)||0;App.storeSettings.geoTestResult=null;render();pushStoreToCloud(App.multiStore.activeStoreId)" class="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white mono-num font-semibold" />
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-600 mb-1">允許半徑（建議 50–100 公尺防室內漂移）</label>
+                    <select onchange="App.storeSettings.radiusMeters=Number(this.value);App.storeSettings.geoTestResult=null;render();pushStoreToCloud(App.multiStore.activeStoreId)" class="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white font-semibold">
+                      ${[30, 50, 80, 100, 150, 200, 300].map(r => `<option value="${r}" ${Number(st.radiusMeters)===r?'selected':''}>${r} 公尺</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+
+                ${testRes ? `
+                  <div class="rounded-lg p-3 border ${testRes.allowed ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'} flex flex-wrap items-center justify-between gap-2">
+                    <div class="font-semibold">
+                      ${testRes.allowed
+                        ? `✅ 實測通過（${testRes.testedAt}）：${testRes.method}${testRes.accuracyM ? `，手機 GPS 誤差 ±${testRes.accuracyM}m` : ''}`
+                        : `❌ 實測攔截（${testRes.testedAt}）：${testRes.errorMsg}`}
+                    </div>
+                    <button type="button" onclick="App.storeSettings.geoTestResult=null;render()" class="text-[11px] opacity-70 hover:opacity-100 font-bold cursor-pointer">清除</button>
+                  </div>
+                ` : ''}
               </div>
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div><label class="block font-semibold text-slate-600 mb-1">緯度</label><input type="number" step="0.00001" value="${st.lat}" onchange="App.storeSettings.lat=Number(this.value)||0;render()" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                <div><label class="block font-semibold text-slate-600 mb-1">經度</label><input type="number" step="0.00001" value="${st.lng}" onchange="App.storeSettings.lng=Number(this.value)||0;render()" class="w-full h-9 px-3 rounded-lg border border-slate-200 mono-num font-semibold" /></div>
-                <div><label class="block font-semibold text-slate-600 mb-1">允許半徑</label><select onchange="App.storeSettings.radiusMeters=Number(this.value);render()" class="w-full h-9 px-3 rounded-lg border border-slate-200 font-semibold"><option value="30" ${st.radiusMeters===30?'selected':''}>30 公尺</option><option value="50" ${st.radiusMeters===50?'selected':''}>50 公尺</option><option value="100" ${st.radiusMeters===100?'selected':''}>100 公尺</option><option value="200" ${st.radiusMeters===200?'selected':''}>200 公尺</option></select></div>
+
+              <!-- 區塊 2：輔助 Wi-Fi 打卡設定 -->
+              <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div class="font-bold text-slate-900 text-xs">② 輔助門市 Wi-Fi 打卡驗證（室內／地下室 GPS 漂移備援）</div>
+                    <p class="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      由於手機系統隱私限制，LINE 網頁無法直接讀取 Wi-Fi 名稱（SSID）；系統改採「<strong>門市 Wi-Fi 外網 IP 比對</strong>」作為真實備援，當店內 GPS 訊號飄移時，只要員工連著店內 Wi-Fi 即可通過打卡。
+                    </p>
+                  </div>
+                  <label class="inline-flex items-center gap-1.5 font-bold text-slate-700 cursor-pointer shrink-0">
+                    <input type="checkbox" ${wifiFallbackOn ? 'checked' : ''} onchange="App.storeSettings.allowWifiIpFallback=this.checked;render();pushStoreToCloud(App.multiStore.activeStoreId)" class="w-4 h-4 accent-[#0F766E] cursor-pointer" />
+                    <span>啟用 Wi-Fi IP 輔助驗證</span>
+                  </label>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label class="block font-semibold text-slate-600 mb-1">門市 Wi-Fi 名稱（SSID，選填提示給員工看）</label>
+                    <input
+                      value="${st.wifiSsid || ''}"
+                      placeholder="例：GrosBec_Staff_5G"
+                      oninput="App.storeSettings.wifiSsid=this.value"
+                      onblur="render();pushStoreToCloud(App.multiStore.activeStoreId)"
+                      class="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-600 mb-1">門市 Wi-Fi 允許外網 IP（多組可用逗號分隔）</label>
+                    <div class="flex gap-2">
+                      <input
+                        value="${st.storePublicIp || ''}"
+                        placeholder="在店內連 Wi-Fi 後按右側「偵測目前 IP」"
+                        oninput="App.storeSettings.storePublicIp=this.value"
+                        onblur="render();pushStoreToCloud(App.multiStore.activeStoreId)"
+                        class="flex-1 min-w-0 h-9 px-3 rounded-lg border border-slate-200 bg-white mono-num font-semibold"
+                      />
+                      <button type="button" onclick="detectAndSetStorePublicIp()" ${st.geoBusy ? 'disabled' : ''} class="shrink-0 h-9 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold cursor-pointer">
+                        📡 偵測目前 IP
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                  <span>⚠️ 請務必在<strong>門市現場連上店內 Wi-Fi</strong> 時再點「偵測目前 IP」（若在家中點選，會把住家 IP 加入允許名單）。</span>
+                  ${allowedIps.length ? `<button type="button" onclick="App.storeSettings.storePublicIp='';App.toast='已清除門市 Wi-Fi IP 清單。';render();pushStoreToCloud(App.multiStore.activeStoreId)" class="shrink-0 px-2 py-0.5 rounded border border-amber-300 bg-white text-amber-900 font-bold cursor-pointer">清除 IP</button>` : ''}
+                </div>
               </div>
-              <div class="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center justify-between gap-4">
+
+              <!-- 底部狀態總覽 -->
+              <div class="rounded-xl border ${geoEnabled ? 'border-emerald-200 bg-emerald-50/50' : 'border-amber-200 bg-amber-50/50'} p-4 flex items-center justify-between gap-4">
                 <div class="space-y-1">
-                  <div class="font-bold text-emerald-900">GPS 地理圍籬已連線至打卡模組</div>
-                  <div class="mono-num text-slate-700">中心座標：${st.lat.toFixed(6)}, ${st.lng.toFixed(6)} · 有效半徑：${st.radiusMeters}m</div>
-                  <div class="text-slate-500">輔助 Wi-Fi SSID：${st.wifiSsid}</div>
+                  <div class="font-bold ${geoEnabled ? 'text-emerald-900' : 'text-amber-900'}">
+                    ${geoEnabled ? '✅ GPS 地理圍籬已連線至 LINE 打卡模組（強制驗證中）' : '⚠️ GPS 圍籬目前已停用（所有地點皆可打卡）'}
+                  </div>
+                  <div class="mono-num text-slate-700">中心座標：${latNum.toFixed(6)}, ${lngNum.toFixed(6)} · 有效半徑：${st.radiusMeters}m</div>
+                  <div class="text-slate-600">
+                    輔助 Wi-Fi SSID：<strong>${st.wifiSsid || '未設定'}</strong>
+                    · 門市 IP 輔助驗證：<strong>${wifiFallbackOn && allowedIps.length ? `已綁定 ${allowedIps.length} 組 (${allowedIps.join(', ')})` : '未綁定（僅依 GPS 距離判斷）'}</strong>
+                  </div>
                 </div>
                 <svg width="96" height="96" viewBox="0 0 112 112" class="shrink-0">
                   <circle cx="56" cy="56" r="48" fill="rgba(15,118,110,0.08)" stroke="#0F766E" stroke-dasharray="4 4" />
@@ -7411,7 +7800,8 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 </svg>
               </div>
             </div>
-          ` : ''}
+            `;
+          })() : ''}
 
           ${st.subTab === 'STATIONS' ? (() => {
             const activeWs = st.workstations.filter(w => w.active !== false);
@@ -8692,6 +9082,21 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 const todaySt = (todayShift && (App.storeSettings.workstations.find(w => w.code === todayShift.station) || STATIONS[todayShift.station])) || null;
                 const todaySchedText = empTodayLog ? empTodayLog.scheduled : (todaySegs.length ? todaySegs.map(g => g.label).join(' / ') : '今日休假');
                 const empHistory = App.attendance.logs.filter(l => l.employeeId === emp.id).sort((a, b) => b.date.localeCompare(a.date));
+                const gc = App.attendance.geoCheck || { status: 'IDLE' };
+                const geoEnabled = App.storeSettings.geoFenceEnabled !== false;
+                const geoBadge = !geoEnabled
+                  ? { cls: 'text-slate-600 bg-slate-100 border-slate-200', txt: '未啟用圍籬' }
+                  : gc.status === 'CHECKING'
+                    ? { cls: 'text-sky-700 bg-sky-50 border-sky-200', txt: '⏳ 定位驗證中…' }
+                    : gc.status === 'OK'
+                      ? { cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', txt: gc.distanceM != null ? `✅ 圍籬內 ${gc.distanceM}m` : `✅ 圍籬內 (${App.storeSettings.radiusMeters}m)` }
+                      : gc.status === 'WIFI_OK'
+                        ? { cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', txt: '✅ 門市 Wi-Fi 通過' }
+                        : gc.status === 'OUT_OF_RANGE'
+                          ? { cls: 'text-rose-700 bg-rose-50 border-rose-200', txt: `❌ 超出圍籬 (${formatDistanceZh(gc.distanceM)})` }
+                          : gc.status === 'ERROR'
+                            ? { cls: 'text-rose-700 bg-rose-50 border-rose-200', txt: '⚠️ 定位未通過' }
+                            : { cls: 'text-slate-600 bg-slate-50 border-slate-200', txt: `📍 限門市 ${App.storeSettings.radiusMeters}m 內` };
 
                 return `
                   <div class="grid grid-cols-2 bg-white rounded-lg p-1 border border-slate-200 font-semibold">
@@ -8701,13 +9106,22 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                   ${App.attendance.phoneTab === 'PUNCH' ? `
                     <!-- 今日日期與班表對照卡片 -->
                     <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
-                      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                      <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
                         <div>
                           <div class="text-[11px] font-semibold text-slate-500">今日日期</div>
                           <div class="text-sm font-bold text-slate-900 mono-num">${formatTaipeiDateWithWeekday(todayTw)}</div>
                         </div>
-                        <span class="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 py-1 px-2 rounded-full font-semibold">圍籬內 ${App.storeSettings.radiusMeters}m</span>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                          <span class="text-[10px] border py-1 px-2 rounded-full font-semibold ${geoBadge.cls}">${geoBadge.txt}</span>
+                          ${geoEnabled ? `<button type="button" onclick="refreshEmployeeGeoStatus()" ${App.attendance.punchBusy ? 'disabled' : ''} title="立即檢查目前定位" class="text-[10px] px-2 py-1 rounded-full border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-600 font-bold cursor-pointer">🔄</button>` : ''}
+                        </div>
                       </div>
+
+                      ${(gc.status === 'OUT_OF_RANGE' || gc.status === 'ERROR') && gc.errorMsg ? `
+                        <div class="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-[11px] text-rose-800 leading-relaxed font-medium">
+                          ❌ ${gc.errorMsg}
+                        </div>
+                      ` : ''}
 
                       <!-- 今日班表對照 -->
                       <div class="rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-1.5">
@@ -8723,8 +9137,8 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
 
                       <!-- 打卡按鈕 -->
                       <div class="grid grid-cols-2 gap-2">
-                        <button onclick="doLiveClockPunch('IN')" class="py-2.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">上班打卡</button>
-                        <button onclick="doLiveClockPunch('OUT')" class="py-2.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white font-bold cursor-pointer">下班簽退</button>
+                        <button onclick="doLiveClockPunch('IN')" ${App.attendance.punchBusy ? 'disabled' : ''} class="py-2.5 rounded-lg bg-[#06C755] hover:opacity-95 disabled:opacity-50 text-white font-bold cursor-pointer">${App.attendance.punchBusy ? '定位驗證中…' : '上班打卡'}</button>
+                        <button onclick="doLiveClockPunch('OUT')" ${App.attendance.punchBusy ? 'disabled' : ''} class="py-2.5 rounded-lg bg-[#0F766E] hover:bg-[#115E59] disabled:opacity-50 text-white font-bold cursor-pointer">${App.attendance.punchBusy ? '定位驗證中…' : '下班簽退'}</button>
                       </div>
 
                       <!-- 今日實際打卡對照 -->
@@ -9414,10 +9828,9 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       '50 公尺': { en: '50m', ja: '50m' },
       '100 公尺': { en: '100m', ja: '100m' },
       '200 公尺': { en: '200m', ja: '200m' },
-      '台北・中山南西商圈': { en: 'Taipei · Zhongshan Nanxi', ja: '台北・中山南西エリア' },
-      '台北・信義威秀商圈': { en: 'Taipei · Xinyi Vieshow', ja: '台北・信義エリア' },
-      '台中・逢甲文華商圈': { en: 'Taichung · Fengjia', ja: '台中・逢甲エリア' },
-      '高雄・漢神巨蛋商圈': { en: 'Kaohsiung · Hanshin Arena', ja: '高雄・漢神アリーナ' },
+      '📍 抓取目前所在位置': { en: '📍 Use My Current Location', ja: '📍 現在地を取得' },
+      '🧪 測試我現在能否打卡': { en: '🧪 Test Geofence Here', ja: '🧪 ここで打刻テスト' },
+      '📡 偵測目前 IP': { en: '📡 Detect Current IP', ja: '📡 現在のIPを取得' },
       '+ 新增站點': { en: '+ Add Station', ja: '+ ポジション追加' },
       '可新增、編輯名稱與色標、設定早／午／晚最低人力或刪除站點，並即時同步排班時間軸': {
         en: 'Add, rename, recolor, set min headcount (AM/Lunch/PM) or delete stations with live timeline sync',
