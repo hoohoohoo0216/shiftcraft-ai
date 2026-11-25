@@ -1,7 +1,7 @@
 // ShiftCraft AI — Taiwan ID / ARC / Bank Passbook AI Vision OCR Edge Function
-// Deploy in Supabase Dashboard → Edge Functions → Deploy a new function → Via Editor → name: "hr-ocr"
-// Turn OFF "Verify JWT" in Details tab.
-// Required Secret: GEMINI_API_KEY (free key from https://aistudio.google.com/apikey)
+// Deploy in Supabase Dashboard → Edge Functions → hr-ocr → paste & Deploy updates
+// Details tab: Turn OFF "Verify JWT"
+// Secrets: GEMINI_API_KEY (from https://aistudio.google.com/apikey)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -19,7 +19,7 @@ function jsonResp(body: Record<string, unknown>, status = 200) {
 function buildPrompt(docType: string): string {
   if (docType === 'ID_FRONT') {
     return [
-      '你是一位專精台灣人事建檔的證件辨識專家。請仔細辨識這張「中華民國國民身分證（正面）」照片（即使照片有旋轉、歪斜或反光也請正確讀取）。',
+      '你是一位專精台灣人事建檔的證件辨識專家。請仔細辨識這張「中華民國國民身分證（正面）」照片（即使照片有旋轉、歪斜、浮水印或反光也請正確讀取）。',
       '請只回傳純 JSON 物件（不要 markdown），欄位如下（無法辨識的欄位請回傳空字串 ""）：',
       '{',
       '  "name": "中文姓名（繁體中文、去除空格，例：王小明）",',
@@ -75,29 +75,88 @@ function buildPrompt(docType: string): string {
   ].join('\n');
 }
 
+const DEFAULT_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+];
+
+async function discoverFallbackModels(apiKey: string, alreadyTried: Set<string>): Promise<string[]> {
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const list = Array.isArray(data?.models) ? data.models : [];
+    const discovered: string[] = [];
+    for (const m of list) {
+      const name = String(m?.name || '').replace(/^models\//, '');
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      if (!name || alreadyTried.has(name)) continue;
+      if (!methods.includes('generateContent')) continue;
+      if (!/^gemini-/i.test(name)) continue;
+      if (/(tts|live|image|omni|embedding|aqa|robotics)/i.test(name)) continue;
+      if (/flash/i.test(name)) discovered.push(name);
+    }
+    return discovered.slice(0, 4);
+  } catch {
+    return [];
+  }
+}
+
 async function callGeminiModel(model: string, apiKey: string, parts: Record<string, unknown>[], jsonMode: boolean) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const generationConfig: Record<string, unknown> = { temperature: 0.1 };
-  if (jsonMode) generationConfig.responseMimeType = 'application/json';
-  if (model.startsWith('gemini-2.5')) {
-    generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  const bodyObj: Record<string, unknown> = {
+    contents: [{ parts }],
+    safetySettings: [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+    ],
+  };
+  if (jsonMode) {
+    bodyObj.generationConfig = { responseMimeType: 'application/json' };
   }
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig,
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-      ],
-    }),
+    body: JSON.stringify(bodyObj),
   });
   const text = await res.text();
   return { ok: res.ok, status: res.status, text };
+}
+
+async function runWithAutoModel(apiKey: string, parts: Record<string, unknown>[], jsonMode: boolean) {
+  const tried = new Set<string>();
+  const errors: string[] = [];
+
+  const tryList = async (models: string[]) => {
+    for (const model of models) {
+      if (tried.has(model)) continue;
+      tried.add(model);
+      try {
+        const r = await callGeminiModel(model, apiKey, parts, jsonMode);
+        if (r.ok) return { ok: true as const, model, text: r.text };
+        errors.push(`${model}(${r.status})`);
+      } catch (e) {
+        errors.push(`${model}(${e instanceof Error ? e.message : 'err'})`);
+      }
+    }
+    return null;
+  };
+
+  const firstPass = await tryList(DEFAULT_MODELS);
+  if (firstPass) return firstPass;
+
+  const extraModels = await discoverFallbackModels(apiKey, tried);
+  if (extraModels.length > 0) {
+    const secondPass = await tryList(extraModels);
+    if (secondPass) return secondPass;
+  }
+
+  return { ok: false as const, error: errors.join(', ') || 'No available Gemini Vision model' };
 }
 
 Deno.serve(async (req: Request) => {
@@ -124,21 +183,12 @@ Deno.serve(async (req: Request) => {
     return jsonResp({ ok: false, error: 'Invalid JSON body' }, 400);
   }
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-
-  // 連線健康檢查模式（不需傳照片）
   if (body.ping === true) {
-    let lastErr = '';
-    for (const model of models) {
-      try {
-        const r = await callGeminiModel(model, apiKey, [{ text: 'Reply OK' }], false);
-        if (r.ok) return jsonResp({ ok: true, engine: model, message: `Gemini AI 視覺辨識已連線（${model}）` });
-        lastErr = `${model} HTTP ${r.status}: ${r.text.slice(0, 180)}`;
-      } catch (e) {
-        lastErr = e instanceof Error ? e.message : String(e);
-      }
+    const res = await runWithAutoModel(apiKey, [{ text: 'Reply OK' }], false);
+    if (res.ok) {
+      return jsonResp({ ok: true, engine: res.model, message: `Gemini AI 視覺辨識已連線（${res.model}）` });
     }
-    return jsonResp({ ok: false, code: 'GEMINI_API_ERROR', error: lastErr }, 502);
+    return jsonResp({ ok: false, code: 'GEMINI_API_ERROR', error: res.error }, 502);
   }
 
   const docType = String(body.docType || 'ID_FRONT');
@@ -151,49 +201,38 @@ Deno.serve(async (req: Request) => {
     return jsonResp({ ok: false, code: 'EMPTY_IMAGE', error: '未提供有效的證件照片' }, 400);
   }
 
-  const prompt = buildPrompt(docType);
   const parts = [
-    { text: prompt },
+    { text: buildPrompt(docType) },
     { inlineData: { mimeType, data: rawBase64 } },
   ];
 
-  let lastStatus = 502;
-  let lastError = '';
-
-  for (const model of models) {
-    try {
-      const r = await callGeminiModel(model, apiKey, parts, true);
-      if (!r.ok) {
-        lastStatus = r.status;
-        lastError = `${model} HTTP ${r.status}: ${r.text.slice(0, 220)}`;
-        continue;
-      }
-      const geminiJson = JSON.parse(r.text);
-      const textOut = geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const cleaned = String(textOut)
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-
-      let parsed: Record<string, unknown> = {};
-      try {
-        parsed = JSON.parse(cleaned);
-      } catch {
-        const braceMatch = cleaned.match(/\{[\s\S]*\}/);
-        if (braceMatch) parsed = JSON.parse(braceMatch[0]);
-      }
-
-      return jsonResp({ ok: true, engine: model, data: parsed });
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-    }
+  const res = await runWithAutoModel(apiKey, parts, true);
+  if (!res.ok) {
+    return jsonResp({ ok: false, code: 'GEMINI_API_ERROR', error: res.error }, 502);
   }
 
-  return jsonResp({
-    ok: false,
-    code: 'GEMINI_API_ERROR',
-    status: lastStatus,
-    error: lastError || 'Gemini API 呼叫失敗',
-  }, 502);
+  try {
+    const geminiJson = JSON.parse(res.text);
+    const textOut = geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const cleaned = String(textOut)
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      const braceMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (braceMatch) parsed = JSON.parse(braceMatch[0]);
+    }
+    return jsonResp({ ok: true, engine: res.model, data: parsed });
+  } catch (err) {
+    return jsonResp({
+      ok: false,
+      code: 'OCR_PARSE_ERROR',
+      error: err instanceof Error ? err.message : String(err),
+    }, 502);
+  }
 });
