@@ -1874,8 +1874,8 @@
       const raw = String((App.storeSettings && App.storeSettings.lineOaId) || (App.lineLiff && App.lineLiff.oaBasicId) || '').trim();
       if (!raw) return '';
       if (/^https?:\/\//i.test(raw)) return raw;
-      const handle = raw.startsWith('@') ? raw : ('@' + raw.replace(/^@+/, ''));
-      return `https://line.me/R/ti/p/${encodeURIComponent(handle)}`;
+      const cleanId = raw.replace(/^@+/, '');
+      return `https://line.me/R/ti/p/@${encodeURIComponent(cleanId)}`;
     }
 
     function openLineOfficialAccountGuide() {
@@ -8349,7 +8349,10 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                       <div class="text-[10px] text-white/85">${App.storeSettings.name}</div>
                     </div>
                   </div>
-                  <button onclick="closeLiffWindowOrDrawer()" class="px-2.5 py-1 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold shrink-0">關閉</button>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button type="button" onclick="openLineOfficialAccountGuide()" class="px-2.5 py-1 rounded bg-white text-[#059643] hover:bg-emerald-50 cursor-pointer font-bold">➕ 官方帳號</button>
+                    <button onclick="closeLiffWindowOrDrawer()" class="px-2.5 py-1 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold shrink-0">關閉</button>
+                  </div>
                 </div>
               </div>
 
@@ -8386,6 +8389,14 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     </div>
                   `}
                 </div>
+
+                <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 space-y-2 shadow-xs">
+                  <div class="font-bold text-emerald-900 text-xs">💡 關掉視窗後也能在家請假</div>
+                  <p class="text-[11px] text-emerald-800 leading-relaxed">記得加入並「釘選」官方帳號，之後直接從 LINE 聊天室底部選單就能請假、看班表與查薪資條，免重掃 QR Code。</p>
+                  <button type="button" onclick="openLineOfficialAccountGuide()" class="w-full h-9 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-xs cursor-pointer">
+                    ➕ 加入官方帳號（方便在家請假）
+                  </button>
+                </div>
               </div>
             </aside>
           </div>
@@ -8414,6 +8425,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                   </div>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
+                  <button type="button" onclick="openLineOfficialAccountGuide()" class="px-2 py-0.5 rounded bg-white text-[#059643] hover:bg-emerald-50 cursor-pointer font-bold">${App.lineLiff && App.lineLiff.isFriend === true ? '💬 官方帳號' : '➕ 加入官方帳號'}</button>
                   ${isInLineApp && hasBackendAccess ? `<button onclick="App.liffDrawerOpen=false;render()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">後台版</button>` : ''}
                   <button onclick="closeLiffWindowOrDrawer()" class="px-2 py-0.5 rounded bg-black/20 hover:bg-black/30 cursor-pointer font-bold">關閉</button>
                 </div>
@@ -8464,18 +8476,16 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                           <div class="font-bold text-emerald-900 text-xs">${isFriend === true ? '🎉 綁定完成！建議釘選官方帳號方便在家請假' : '🎉 綁定完成！馬上加入官方帳號（免重掃 QR Code）'}</div>
                           <p class="text-[11px] text-emerald-800/90 mt-1 leading-relaxed">
                             ${isFriend === true
-                              ? '您已加入官方帳號，建議長按聊天室「釘選置頂」，以後在家點底部選單就能請假、看班表；換手機系統也會自動辨識。'
+                              ? '您已加入官方帳號，建議點下方開啟並長按聊天室「釘選置頂」，以後在家點底部選單就能請假、看班表；換手機系統也會自動辨識。'
                               : '關掉此視窗後若想在家請假，請先加入並「釘選」官方帳號，以後點底部選單即可隨時開啟（換手機免重掃）。'}
                           </p>
                         </div>
                         <button type="button" onclick="dismissLineOaTip()" class="shrink-0 text-emerald-700/70 hover:text-emerald-900 font-bold cursor-pointer">✕</button>
                       </div>
                       <div class="flex flex-wrap items-center gap-2">
-                        ${isFriend !== true ? `
-                          <button type="button" onclick="openLineOfficialAccountGuide()" class="flex-1 min-w-[180px] h-9 px-3 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-xs cursor-pointer shadow-xs">
-                            ➕ 加入官方帳號（方便在家請假）
-                          </button>
-                        ` : ''}
+                        <button type="button" onclick="openLineOfficialAccountGuide()" class="flex-1 min-w-[180px] h-9 px-3 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-xs cursor-pointer shadow-xs">
+                          ${isFriend === true ? '💬 開啟官方帳號（建議釘選置頂）' : '➕ 加入官方帳號（方便在家請假）'}
+                        </button>
                         <button type="button" onclick="copyStoreLineInviteLink()" class="h-9 px-3 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-bold text-[11px] cursor-pointer">
                           📋 複製入口存 Keep
                         </button>
@@ -8486,13 +8496,13 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     </div>
                   `;
                 }
-                if (isFriend !== true && !oaDismissed) {
+                if (!oaDismissed) {
                   return `
                     <div class="bg-white border border-emerald-200 rounded-xl p-2.5 flex items-center justify-between gap-2 shadow-xs">
                       <button type="button" onclick="openLineOfficialAccountGuide()" class="flex-1 py-1.5 px-2.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold text-[11px] text-center cursor-pointer">
-                        ➕ 加入官方帳號（方便在家請假）
+                        ${isFriend === true ? '💬 開啟官方帳號（在家請假／釘選選單）' : '➕ 加入官方帳號（方便在家請假）'}
                       </button>
-                      <button type="button" onclick="dismissLineOaTip()" title="已加入官方帳號，關閉提示" class="shrink-0 w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-600 font-bold cursor-pointer">✕</button>
+                      <button type="button" onclick="dismissLineOaTip()" title="關閉提示（仍可由上方開啟官方帳號）" class="shrink-0 w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-600 font-bold cursor-pointer">✕</button>
                     </div>
                   `;
                 }
