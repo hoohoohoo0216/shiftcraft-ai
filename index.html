@@ -1120,13 +1120,15 @@
 
     function getAccountEntitlement() {
       const a = App.auth;
-      const planCode = (a.planCode || App.billing.planCode || 'PRO').toUpperCase();
-      const planObj = SAAS_PLANS.find(p => p.code === planCode) || SAAS_PLANS[1];
+      const isLoggedIn = Boolean(a && a.loggedIn);
       if (a.isDemo || a.subStatus === 'DEMO') {
+        const planCode = (a.planCode || App.billing.planCode || 'PRO').toUpperCase();
+        const planObj = SAAS_PLANS.find(p => p.code === planCode) || SAAS_PLANS[1];
         return {
           isDemo: true,
           subStatus: 'DEMO',
           planCode: planObj.code,
+          effectivePlan: planObj.code,
           planName: planObj.name,
           expiresAt: null,
           expiresDateStr: '體驗模式無期限',
@@ -1136,28 +1138,56 @@
           maxStaffPerStore: Infinity,
           canUseScheduling: true,
           canUseLeaveApproval: true,
+          canUseMultiStore: true,
         };
       }
+      // 員工用手機直接開啟 LINE LIFF（未登入老闆後台）時，依門市雲端同步下來的 effectivePlanCode 判定
+      if (!isLoggedIn) {
+        const storePlan = String((App.storeSettings && App.storeSettings.effectivePlanCode) || 'PRO').toUpperCase();
+        const planObj = SAAS_PLANS.find(p => p.code === storePlan) || SAAS_PLANS[1];
+        const isStarter = storePlan === 'STARTER';
+        return {
+          isDemo: false,
+          subStatus: 'ACTIVE',
+          planCode: storePlan,
+          effectivePlan: storePlan,
+          planName: planObj.name,
+          expiresAt: null,
+          expiresDateStr: '—',
+          daysLeft: 30,
+          isExpired: false,
+          maxStores: isStarter ? 1 : 10,
+          maxStaffPerStore: isStarter ? 15 : (storePlan === 'PRO' ? 30 : Infinity),
+          canUseScheduling: !isStarter,
+          canUseLeaveApproval: !isStarter,
+          canUseMultiStore: !isStarter,
+        };
+      }
+      const planCode = (a.planCode || App.billing.planCode || 'PRO').toUpperCase();
+      const planObj = SAAS_PLANS.find(p => p.code === planCode) || SAAS_PLANS[1];
       const status = (a.subStatus || 'TRIAL').toUpperCase();
       const expiryIso = (status === 'ACTIVE' && a.paidUntil) ? a.paidUntil : a.trialEndsAt;
       const expiryMs = expiryIso ? new Date(expiryIso).getTime() : 0;
       const daysLeft = expiryMs ? Math.ceil((expiryMs - Date.now()) / 86400000) : 0;
       const isExpired = status === 'SUSPENDED' || (expiryMs > 0 && daysLeft <= 0);
       const effectivePlan = status === 'TRIAL' ? 'PRO' : planCode;
-      const maxStaffPerStore = effectivePlan === 'STARTER' ? 15 : (effectivePlan === 'PRO' ? 30 : Infinity);
+      const isStarter = effectivePlan === 'STARTER';
+      const maxStaffPerStore = isStarter ? 15 : (effectivePlan === 'PRO' ? 30 : Infinity);
       return {
         isDemo: false,
         subStatus: status,
         planCode,
+        effectivePlan,
         planName: planObj.name,
         expiresAt: expiryIso,
         expiresDateStr: formatIsoDateTW(expiryIso),
         daysLeft,
         isExpired,
-        maxStores: Math.max(1, Number(a.maxStores) || 1),
+        maxStores: isStarter ? 1 : Math.max(1, Number(a.maxStores) || 1),
         maxStaffPerStore,
-        canUseScheduling: effectivePlan !== 'STARTER',
-        canUseLeaveApproval: true,
+        canUseScheduling: !isStarter,
+        canUseLeaveApproval: !isStarter,
+        canUseMultiStore: !isStarter,
       };
     }
 
@@ -1191,7 +1221,7 @@
       App.auth.ownerName = App.auth.ownerName || '品牌負責人';
       App.auth.planCode = (acc.plan_code || acc.planCode || 'PRO').toUpperCase();
       App.auth.subStatus = (acc.sub_status || acc.subStatus || 'TRIAL').toUpperCase();
-      App.auth.maxStores = Math.max(1, Number(acc.max_stores || acc.maxStores) || 1);
+      App.auth.maxStores = (App.auth.subStatus !== 'TRIAL' && App.auth.planCode === 'STARTER') ? 1 : Math.max(1, Number(acc.max_stores || acc.maxStores) || 1);
       App.auth.trialEndsAt = acc.trial_ends_at || acc.trialEndsAt || null;
       App.auth.paidUntil = acc.paid_until || acc.paidUntil || null;
       App.auth.lastLoginAt = formatIsoDateTW(acc.last_login_at || new Date().toISOString());
@@ -1204,6 +1234,7 @@
       App.billing.cards = (App.billing.cards || []).filter(c => c.id !== 'card-1');
       const ent = getAccountEntitlement();
       App.billing.nextChargeDate = ent.expiresDateStr;
+      App.storeSettings.effectivePlanCode = ent.effectivePlan;
 
       const brandId = acc.brand_id || acc.brandId;
       if (brandId) {
@@ -1219,7 +1250,7 @@
       if (ent.isExpired) {
         App.mainTab = 'BILLING';
         App.billing.subTab = 'PLANS';
-      } else if (!ent.canUseScheduling && App.mainTab === 'SCHED') {
+      } else if ((!ent.canUseScheduling && App.mainTab === 'SCHED') || (!ent.canUseLeaveApproval && App.mainTab === 'LIFF_LEAVE')) {
         App.mainTab = 'ATTENDANCE';
       }
       saveAuthSession();
@@ -2638,6 +2669,12 @@ grant execute on function public.liff_save_binding(text, text, text, text, text)
 grant execute on function public.liff_delete_binding(text) to anon, authenticated;`;
 
     function captureActiveStoreSnapshot() {
+      const storeSettingsCopy = JSON.parse(JSON.stringify(App.storeSettings));
+      if (App.auth && App.auth.loggedIn && !App.auth.isDemo) {
+        const ent = getAccountEntitlement();
+        storeSettingsCopy.effectivePlanCode = ent.effectivePlan || 'PRO';
+        App.storeSettings.effectivePlanCode = storeSettingsCopy.effectivePlanCode;
+      }
       return {
         employees: JSON.parse(JSON.stringify(App.employees)),
         sched: {
@@ -2654,7 +2691,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           logs: JSON.parse(JSON.stringify(App.attendance.logs)),
           corrections: JSON.parse(JSON.stringify(App.attendance.corrections)),
         },
-        storeSettings: JSON.parse(JSON.stringify(App.storeSettings)),
+        storeSettings: storeSettingsCopy,
       };
     }
 
@@ -2745,6 +2782,13 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       if (e) e.preventDefault();
       const ent = getAccountEntitlement();
       const ms = App.multiStore;
+      if (!ent.isDemo && !ent.canUseMultiStore) {
+        App.toast = '基本方案僅限單店使用；請升級至「進階方案」或「頂級方案」即可加購多門市管理。';
+        App.mainTab = 'BILLING';
+        App.billing.subTab = 'PLANS';
+        render();
+        return;
+      }
       if (!ent.isDemo && ms.stores.length >= ent.maxStores) {
         App.toast = `目前已達訂閱門市上限（${ent.maxStores} 間門市），請前往「帳號與訂閱」增加門市數後再新增分店。`;
         App.mainTab = 'BILLING';
@@ -3267,6 +3311,10 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     }
 
     function openPlanCheckout(planCode) {
+      if (planCode === 'STARTER' && (Number(App.billing.storeCount) || 1) > 1) {
+        App.billing.storeCount = 1;
+        App.toast = '基本方案限單店（1 家門市）使用，已自動調整為 1 家門市；多門市管理請選擇進階或頂級方案。';
+      }
       App.billing.checkoutModal = { planCode };
       render();
     }
@@ -3274,16 +3322,24 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     function confirmPlanCheckout() {
       const m = App.billing.checkoutModal;
       if (!m) return;
-      const calc = getPlanMonthlyTotal(m.planCode, App.billing.storeCount, App.billing.billingCycle);
+      const effectiveStores = m.planCode === 'STARTER' ? 1 : Math.max(1, Number(App.billing.storeCount) || 1);
+      App.billing.storeCount = effectiveStores;
+      const calc = getPlanMonthlyTotal(m.planCode, effectiveStores, App.billing.billingCycle);
       const gw = PAYMENT_GATEWAYS.find(g => g.code === App.billing.gateway) || PAYMENT_GATEWAYS[0];
       App.billing.planCode = m.planCode;
+      App.auth.planCode = m.planCode;
+      App.auth.maxStores = effectiveStores;
+      if (App.auth.loggedIn && !App.auth.isDemo) {
+        const ent = getAccountEntitlement();
+        App.storeSettings.effectivePlanCode = ent.effectivePlan;
+      }
       App.billing.checkoutModal = null;
-      const now = new Date();
-      const invId = `INV-2026-${String(App.billing.invoices.length + 10).padStart(2, '0')}`;
+      const todayStr = getTaipeiTodayStr();
+      const invId = `INV-${todayStr.slice(0, 7)}-${String(App.billing.invoices.length + 10).padStart(2, '0')}`;
       App.billing.invoices.unshift({
         id: invId,
-        date: '2026-11-21',
-        period: App.billing.billingCycle === 'YEARLY' ? '2026/11/21–2027/11/20' : '2026/11/21–12/20',
+        date: todayStr,
+        period: App.billing.billingCycle === 'YEARLY' ? `${todayStr} 起 1 年` : `${todayStr} 起 1 個月`,
         plan: calc.plan.name,
         stores: calc.stores,
         amount: calc.chargeNow,
@@ -3291,8 +3347,10 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
         status: 'PAID',
         eInvoiceNo: 'AC-' + String(Math.floor(10000000 + Math.random() * 89999999)),
       });
+      saveAuthSession();
       App.toast = `金流授權成功！已切換至「${calc.plan.name}」（${calc.stores} 店 · NT$${calc.chargeNow.toLocaleString()}），電子發票已開立。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
     }
 
     function testPaymentGateway(gwCode) {
@@ -4726,7 +4784,9 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     }
 
     function approveAllPendingViaLine() {
-      const pendingLeave = App.liff.requests.filter(r => r.status === 'PENDING');
+      const ent = getAccountEntitlement();
+      const canLeave = ent.isDemo || ent.canUseLeaveApproval;
+      const pendingLeave = canLeave ? App.liff.requests.filter(r => r.status === 'PENDING') : [];
       const pendingPunch = App.attendance.corrections.filter(c => c.status === 'PENDING');
       const total = pendingLeave.length + pendingPunch.length;
       if (total === 0) { App.toast = '目前沒有待簽核項目。'; render(); return; }
@@ -5799,15 +5859,20 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     }
 
     function renderPlanUpgradeGate(currentNav, ent) {
+      const featureHighlights = currentNav.key === 'LIFF_LEAVE'
+        ? 'LINE 員工請假、調班、加班申請，店長單一窗口 LINE 即時推播簽核，以及核准後自動連動加班費／補休與薪資結算'
+        : (currentNav.key === 'STATIONS' || currentNav.key === 'SHIFTS')
+          ? '自訂門市工作站最低人力、早／晚／跨夜班別模板，並與 24 小時智慧排班時間軸即時連動'
+          : '單日／全週／整月智慧排班、國定假日雙倍薪與一例一休防呆檢查、LINE 請假調班加班簽核，以及單店 30 名員工額度與多門市加購';
       return `
         <div class="max-w-lg mx-auto my-8 bg-white border border-teal-200 rounded-2xl p-7 text-center space-y-4 shadow-xs">
           <div class="w-12 h-12 rounded-2xl bg-teal-50 text-[#0F766E] flex items-center justify-center mx-auto text-xl">🔒</div>
           <div class="space-y-1">
             <h2 class="text-lg font-bold text-slate-900">「${currentNav.label}」為進階方案以上專屬功能</h2>
-            <p class="text-xs text-slate-500">您目前為「${ent.planName}」（含打卡、算薪、人事建檔與單店 15 人額度）。</p>
+            <p class="text-xs text-slate-500">您目前為「${ent.planName}」（含人事建檔 15 人、LINE 打卡／補卡、GPS 圍籬、自動算薪與銀行薪轉）。</p>
           </div>
           <div class="rounded-xl bg-teal-50/70 border border-teal-200/80 p-3.5 text-xs text-teal-900 leading-relaxed">
-            升級至 <strong>進階方案（NT$1,290／店／月）</strong> 即可立即解鎖 24 小時 AI 智慧排班、台灣勞基法合規檢查、LINE 請假調班簽核與單店 30 名員工額度。
+            升級至 <strong>進階方案（NT$1,290／店／月）</strong> 即可立即解鎖：${featureHighlights}。
           </div>
           <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1 text-xs font-bold">
             <button onclick="App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="h-9 px-4 rounded-lg bg-[#0F766E] hover:bg-[#115E59] text-white cursor-pointer">查看方案並升級</button>
@@ -5876,9 +5941,11 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     ${ICONS.store}
                     <span>切換門市 (${App.multiStore.stores.length} 店)</span>
                   </div>
-                  ${hasRolePerm('settingsAdmin') ? `
-                    <button onclick="App.multiStore.addingBranch=!App.multiStore.addingBranch;render()" class="text-[10px] font-bold text-[#0F766E] hover:underline cursor-pointer">${App.multiStore.addingBranch ? '取消' : '+ 新增分店'}</button>
-                  ` : ''}
+                  ${hasRolePerm('settingsAdmin') ? (
+                    (!ent.isDemo && !ent.canUseMultiStore)
+                      ? `<button onclick="App.toast='基本方案僅限單店使用，升級至進階方案即可加購多門市管理。';App.mainTab='BILLING';App.billing.subTab='PLANS';render()" class="text-[10px] font-bold text-slate-400 hover:text-[#0F766E] cursor-pointer" title="升級至進階方案解鎖多門市">🔒 新增分店</button>`
+                      : `<button onclick="App.multiStore.addingBranch=!App.multiStore.addingBranch;render()" class="text-[10px] font-bold text-[#0F766E] hover:underline cursor-pointer">${App.multiStore.addingBranch ? '取消' : '+ 新增分店'}</button>`
+                  ) : ''}
                 </div>
                 <select
                   onchange="switchActiveStore(this.value)"
@@ -7755,21 +7822,24 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     function renderStoreSettingsModule() {
       const st = App.storeSettings, d = st.adminDraft, weekdays = ['週一', '週二', '週三', '週四', '週五', '週六', '週日'];
       const radarR = Math.min(44, Math.max(16, Math.round(14 + st.radiusMeters * 0.15)));
+      const ent = getAccountEntitlement();
+      const schedLocked = !ent.isDemo && !ent.canUseScheduling;
       const subTabs = [
         { k: 'BASIC', l: '基本資料與店休日' },
         { k: 'GEO', l: 'GPS 圍籬與 Wi-Fi 打卡' },
-        { k: 'STATIONS', l: '工作站與最低人力' },
-        { k: 'SHIFTS', l: '班別模板設定' },
+        { k: 'STATIONS', l: '工作站與最低人力', planLocked: schedLocked },
+        { k: 'SHIFTS', l: '班別模板設定', planLocked: schedLocked },
         { k: 'RBAC', l: '帳號與權限' },
       ];
 
       return `
         <div class="space-y-4">
           <div class="inline-flex flex-wrap bg-white border border-[var(--border)] rounded-lg p-1 text-xs font-semibold gap-1">
-            ${subTabs.map(t => `<button onclick="App.storeSettings.subTab='${t.k}';render()" class="px-3 py-1.5 rounded-md cursor-pointer ${st.subTab===t.k?'bg-[#0F766E] text-white':'text-slate-600 hover:text-slate-900'}">${t.l}</button>`).join('')}
+            ${subTabs.map(t => `<button onclick="App.storeSettings.subTab='${t.k}';render()" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md cursor-pointer ${st.subTab===t.k?'bg-[#0F766E] text-white':(t.planLocked?'text-slate-400 hover:text-slate-600':'text-slate-600 hover:text-slate-900')}"><span>${t.l}</span>${t.planLocked ? `<span class="opacity-80">${ICONS.lock}</span>` : ''}</button>`).join('')}
           </div>
 
           ${st.subTab === 'SHIFTS' ? (() => {
+            if (schedLocked) return renderPlanUpgradeGate({ key: 'SHIFTS', label: '班別模板設定' }, ent);
             const tpls = Array.isArray(st.shiftTemplates) ? st.shiftTemplates : [];
             const td = st.shiftTemplateDraft || { name: '', startTime: '09:00', endTime: '17:30', breakMins: 30 };
             const isEditingTpl = !!st.editingShiftTplCode;
@@ -8202,6 +8272,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           })() : ''}
 
           ${st.subTab === 'STATIONS' ? (() => {
+            if (schedLocked) return renderPlanUpgradeGate({ key: 'STATIONS', label: '工作站與最低人力' }, ent);
             const activeWs = st.workstations.filter(w => w.active !== false);
             const totM = activeWs.reduce((a, b) => a + (b.minMorning ?? 1), 0);
             const totL = activeWs.reduce((a, b) => a + (b.minLunchPeak ?? 1), 0);
@@ -8797,6 +8868,9 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 ${SAAS_PLANS.map(p => {
                   const isCur = b.planCode === p.code;
                   const unit = b.billingCycle === 'YEARLY' ? Math.round(p.monthlyPrice * 0.8) : p.monthlyPrice;
+                  const isStarterPlan = p.code === 'STARTER';
+                  const displayStores = isStarterPlan ? 1 : b.storeCount;
+                  const starterMultiBlocked = isStarterPlan && b.storeCount > 1;
                   return `
                     <div class="bg-white rounded-2xl p-5 flex flex-col justify-between space-y-4 border-2 ${isCur ? 'border-[#0F766E] shadow-sm' : 'border-slate-200'}">
                       <div class="space-y-3">
@@ -8810,14 +8884,15 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                             <span class="text-2xl font-bold mono-num text-slate-900">NT$${unit.toLocaleString()}</span>
                             <span class="text-slate-500">/ 店 / 月</span>
                           </div>
-                          <div class="text-[11px] text-[#0F766E] font-semibold mt-0.5">${p.maxStaff} · ${b.storeCount} 店合計 NT$${(unit * b.storeCount).toLocaleString()}/月</div>
+                          <div class="text-[11px] text-[#0F766E] font-semibold mt-0.5">${p.maxStaff} · ${isStarterPlan ? `限單店 NT$${unit.toLocaleString()}/月` : `${displayStores} 店合計 NT$${(unit * displayStores).toLocaleString()}/月`}</div>
+                          ${starterMultiBlocked ? `<div class="text-[10px] text-amber-700 font-semibold mt-1">⚠️ 您上方選擇了 ${b.storeCount} 家門市，基本方案僅限 1 家門市；多門市請選進階或頂級方案。</div>` : ''}
                         </div>
                         <ul class="space-y-2 pt-2 border-t border-slate-100">
                           ${p.features.map(ft => `<li class="flex items-start gap-2 text-slate-700"><span class="text-[#0F766E] mt-0.5">${ICONS.check}</span><span>${ft}</span></li>`).join('')}
                         </ul>
                       </div>
                       <button onclick="openPlanCheckout('${p.code}')" class="w-full h-9 rounded-lg font-bold cursor-pointer ${isCur ? 'border border-[#0F766E] text-[#0F766E] bg-teal-50/50 hover:bg-teal-50' : 'bg-[#0F766E] hover:bg-[#115E59] text-white'}">
-                        ${isCur ? '續約 / 調整門市數結帳' : '選擇此方案並前往金流結帳'}
+                        ${isCur ? (isStarterPlan ? '續約基本方案（單店）' : '續約 / 調整門市數結帳') : (starterMultiBlocked ? '改以單店選擇基本方案' : '選擇此方案並前往金流結帳')}
                       </button>
                     </div>
                   `;
@@ -8995,18 +9070,20 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     // 6. 右側滑出式 LINE LIFF 員工模擬抽屜 (不佔用日常管理介面)
     // ============================================================================
     function renderLineManagerApprovalContent() {
-      const pendingLeave = App.liff.requests.filter(r => r.status === 'PENDING');
+      const ent = getAccountEntitlement();
+      const canLeave = ent.isDemo || ent.canUseLeaveApproval;
+      const pendingLeave = canLeave ? App.liff.requests.filter(r => r.status === 'PENDING') : [];
       const pendingPunch = App.attendance.corrections.filter(c => c.status === 'PENDING');
       const totalPending = pendingLeave.length + pendingPunch.length;
-      const f = App.liffMgrFilter || 'ALL';
-      const showLeave = f === 'ALL' || f === 'LEAVE';
+      const f = canLeave ? (App.liffMgrFilter || 'ALL') : 'PUNCH';
+      const showLeave = canLeave && (f === 'ALL' || f === 'LEAVE');
       const showPunch = f === 'ALL' || f === 'PUNCH';
       const ap = getActiveLineApprover();
       const doneItems = [
-        ...App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
+        ...(canLeave ? App.liff.requests.filter(r => r.status !== 'PENDING').map(r => {
           const e = App.employees.find(x => x.id === r.employeeId);
           return { kind: r.kind === 'LEAVE' ? '請假單' : r.kind === 'OVERTIME' ? '加班單' : '調班單', name: e ? e.name : '', date: r.date, status: r.status, note: r.managerNote, via: r.signedVia, signedBy: r.signedBy };
-        }),
+        }) : []),
         ...App.attendance.corrections.filter(c => c.status !== 'PENDING').map(c => {
           const e = App.employees.find(x => x.id === c.employeeId);
           return { kind: '補卡單', name: e ? e.name : '', date: c.date, status: c.status, note: c.managerNote, via: c.signedVia, signedBy: c.signedBy };
@@ -9036,11 +9113,17 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
             <span class="text-[10px] text-slate-400 font-medium shrink-0">即時同步後台</span>
           </div>
 
-          <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
-            <button onclick="App.liffMgrFilter='ALL';render()" class="py-1 rounded-md cursor-pointer ${f==='ALL'?'bg-[#06C755] text-white':'text-slate-600'}">全部待簽 (${totalPending})</button>
-            <button onclick="App.liffMgrFilter='LEAVE';render()" class="py-1 rounded-md cursor-pointer ${f==='LEAVE'?'bg-[#06C755] text-white':'text-slate-600'}">假單加班 (${pendingLeave.length})</button>
-            <button onclick="App.liffMgrFilter='PUNCH';render()" class="py-1 rounded-md cursor-pointer ${f==='PUNCH'?'bg-[#06C755] text-white':'text-slate-600'}">漏卡補登 (${pendingPunch.length})</button>
-          </div>
+          ${canLeave ? `
+            <div class="grid grid-cols-3 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
+              <button onclick="App.liffMgrFilter='ALL';render()" class="py-1 rounded-md cursor-pointer ${f==='ALL'?'bg-[#06C755] text-white':'text-slate-600'}">全部待簽 (${totalPending})</button>
+              <button onclick="App.liffMgrFilter='LEAVE';render()" class="py-1 rounded-md cursor-pointer ${f==='LEAVE'?'bg-[#06C755] text-white':'text-slate-600'}">假單加班 (${pendingLeave.length})</button>
+              <button onclick="App.liffMgrFilter='PUNCH';render()" class="py-1 rounded-md cursor-pointer ${f==='PUNCH'?'bg-[#06C755] text-white':'text-slate-600'}">漏卡補登 (${pendingPunch.length})</button>
+            </div>
+          ` : `
+            <div class="bg-white rounded-lg p-1.5 border border-slate-200 text-center font-bold text-[11px] text-[#059643]">
+              漏卡補登待簽核 (${pendingPunch.length})
+            </div>
+          `}
         </div>
 
         ${totalPending === 0 ? `
@@ -9135,7 +9218,11 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
     }
 
     function renderLiffDrawer() {
-      const mode = App.mainTab === 'ATTENDANCE' ? 'ATT' : App.mainTab === 'LIFF_LEAVE' ? 'LEAVE' : App.mainTab === 'PAYROLL' ? 'PAYROLL' : 'SCHED';
+      const ent = getAccountEntitlement();
+      const lineCanSched = ent.isDemo || ent.canUseScheduling;
+      const lineCanLeave = ent.isDemo || ent.canUseLeaveApproval;
+      const rawMode = App.mainTab === 'ATTENDANCE' ? 'ATT' : App.mainTab === 'LIFF_LEAVE' ? 'LEAVE' : App.mainTab === 'PAYROLL' ? 'PAYROLL' : 'SCHED';
+      const mode = (rawMode === 'SCHED' && !lineCanSched) || (rawMode === 'LEAVE' && !lineCanLeave) ? 'ATT' : rawMode;
       const empId = mode === 'ATT' ? App.attendance.liffEmpId : mode === 'LEAVE' ? App.liff.empId : mode === 'PAYROLL' ? App.payroll.liffEmpId : App.sched.liffEmpId;
       const emp = App.employees.find(e => e.id === empId) || App.employees[0];
       if (!emp) {
@@ -9250,7 +9337,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
         : (hasRolePerm('approveLeave') || hasRolePerm('approvePunch'));
       const isMgr = canLineApprove && App.liffRole === 'MANAGER';
       const isStaffOnly = isRealLineUser ? !canLineApprove : (App.storeSettings.activeRole === 'STAFF');
-      const totalLinePending = App.liff.requests.filter(r => r.status === 'PENDING').length + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
+      const totalLinePending = (lineCanLeave ? App.liff.requests.filter(r => r.status === 'PENDING').length : 0) + App.attendance.corrections.filter(c => c.status === 'PENDING').length;
 
       return `
         <div class="no-print fixed inset-0 bg-slate-900/30 z-40 flex justify-end" onclick="${isInLineApp ? '' : 'App.liffDrawerOpen=false;render()'}">
@@ -9351,7 +9438,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
               ${(() => {
                 const seen = getSeenDecisionKeys();
                 const empDecided = [
-                  ...(App.liff.requests || []).filter(r => r.employeeId === emp.id && r.status !== 'PENDING').map(r => ({
+                  ...(lineCanLeave ? (App.liff.requests || []).filter(r => r.employeeId === emp.id && r.status !== 'PENDING').map(r => ({
                     key: `req:${r.id}:${r.status}`,
                     kind: r.kind === 'LEAVE' ? '請假申請' : r.kind === 'OVERTIME' ? '加班申請' : '調班申請',
                     date: r.date,
@@ -9359,7 +9446,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     status: r.status,
                     signedBy: r.signedBy || '',
                     note: r.managerNote || '',
-                  })),
+                  })) : []),
                   ...(App.attendance.corrections || []).filter(c => c.employeeId === emp.id && c.status !== 'PENDING').map(c => ({
                     key: `mp:${c.id}:${c.status}`,
                     kind: '補打卡申請',
@@ -9764,26 +9851,47 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
               })() : ''}
               `}
             </div>
-            ${!isMgr ? `
-              <nav class="shrink-0 bg-white border-t border-slate-200 grid grid-cols-4 text-[11px] font-bold">
-                <button onclick="App.mainTab='SCHED';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='SCHED'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
-                  <span class="text-sm leading-none">📅</span>
-                  <span>班表</span>
-                </button>
-                <button onclick="App.mainTab='LIFF_LEAVE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='LEAVE'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
-                  <span class="text-sm leading-none">📝</span>
-                  <span>請假</span>
-                </button>
-                <button onclick="App.mainTab='ATTENDANCE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='ATT'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
-                  <span class="text-sm leading-none">⏱️</span>
-                  <span>打卡</span>
-                </button>
-                <button onclick="App.mainTab='PAYROLL';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='PAYROLL'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
-                  <span class="text-sm leading-none">💰</span>
-                  <span>薪資條</span>
-                </button>
-              </nav>
-            ` : ''}
+            ${!isMgr ? (
+              (lineCanSched || lineCanLeave) ? `
+                <nav class="shrink-0 bg-white border-t border-slate-200 grid ${lineCanSched && lineCanLeave ? 'grid-cols-4' : 'grid-cols-3'} text-[11px] font-bold">
+                  ${lineCanSched ? `
+                    <button onclick="App.mainTab='SCHED';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='SCHED'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                      <span class="text-sm leading-none">📅</span>
+                      <span>班表</span>
+                    </button>
+                  ` : ''}
+                  ${lineCanLeave ? `
+                    <button onclick="App.mainTab='LIFF_LEAVE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='LEAVE'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                      <span class="text-sm leading-none">📝</span>
+                      <span>請假</span>
+                    </button>
+                  ` : ''}
+                  <button onclick="App.mainTab='ATTENDANCE';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='ATT'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                    <span class="text-sm leading-none">⏱️</span>
+                    <span>打卡</span>
+                  </button>
+                  <button onclick="App.mainTab='PAYROLL';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='PAYROLL'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                    <span class="text-sm leading-none">💰</span>
+                    <span>薪資條</span>
+                  </button>
+                </nav>
+              ` : `
+                <nav class="shrink-0 bg-white border-t border-slate-200 grid grid-cols-3 text-[11px] font-bold">
+                  <button onclick="App.mainTab='ATTENDANCE';App.attendance.phoneTab='PUNCH';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='ATT' && App.attendance.phoneTab!=='MISSED_FORM'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                    <span class="text-sm leading-none">⏱️</span>
+                    <span>打卡</span>
+                  </button>
+                  <button onclick="App.mainTab='ATTENDANCE';App.attendance.phoneTab='MISSED_FORM';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='ATT' && App.attendance.phoneTab==='MISSED_FORM'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                    <span class="text-sm leading-none">📌</span>
+                    <span>補卡</span>
+                  </button>
+                  <button onclick="App.mainTab='PAYROLL';render()" class="py-2.5 flex flex-col items-center gap-0.5 cursor-pointer transition ${mode==='PAYROLL'?'text-[#06C755] bg-emerald-50/60':'text-slate-500 hover:text-slate-800'}">
+                    <span class="text-sm leading-none">💰</span>
+                    <span>薪資條</span>
+                  </button>
+                </nav>
+              `
+            ) : ''}
           </aside>
         </div>
       `;
