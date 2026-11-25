@@ -597,7 +597,7 @@
       liffMgrFilter: 'ALL', // ALL | LEAVE | PUNCH
       lineLiff: {
         liffId: '2012747321-uH6zNzCm',
-        oaBasicId: '',
+        oaBasicId: '@559iksai',
         ready: false,
         inClient: false,
         loggedIn: false,
@@ -7207,10 +7207,10 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     <div class="font-bold text-slate-900">LINE 官方帳號引導設定（員工在家請假／圖文選單入口）</div>
                     <div class="text-[11px] text-slate-600 mt-0.5">填入貴店或品牌的 LINE 官方帳號 ID（例如 <span class="mono-num font-semibold">@shiftcraft</span>）或加好友短網址（例如 <span class="mono-num font-semibold">https://lin.ee/xxxx</span>），員工綁定完成後就會顯示「加入官方帳號（方便在家請假）」一鍵按鈕。</div>
                   </div>
-                  ${getLineOfficialAccountUrl() ? `<span class="px-2.5 py-1 rounded-full bg-white border border-emerald-200 text-emerald-700 font-bold text-[11px]">✅ 已啟用一鍵加好友</span>` : `<span class="px-2.5 py-1 rounded-full bg-white border border-amber-200 text-amber-700 font-semibold text-[11px]">選填（未填將引導存 Keep）</span>`}
+                  ${getLineOfficialAccountUrl() ? `<span class="px-2.5 py-1 rounded-full bg-white border border-emerald-200 text-emerald-700 font-bold text-[11px] mono-num">✅ 已啟用一鍵加好友（${st.lineOaId || App.lineLiff.oaBasicId}）</span>` : `<span class="px-2.5 py-1 rounded-full bg-white border border-amber-200 text-amber-700 font-semibold text-[11px]">選填（未填將引導存 Keep）</span>`}
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
-                  <input value="${st.lineOaId||''}" placeholder="例：@123abcde 或 https://lin.ee/xxxxxxx" oninput="App.storeSettings.lineOaId=this.value.trim()" onblur="render()" class="flex-1 min-w-[220px] h-9 px-3 rounded-lg border border-emerald-200 bg-white mono-num font-semibold" />
+                  <input value="${st.lineOaId||''}" placeholder="留空預設使用 ${App.lineLiff.oaBasicId || '@559iksai'}，或填入其他 @ID / https://lin.ee/..." oninput="App.storeSettings.lineOaId=this.value.trim()" onblur="render()" class="flex-1 min-w-[220px] h-9 px-3 rounded-lg border border-emerald-200 bg-white mono-num font-semibold" />
                   <button type="button" onclick="App.toast='已儲存 LINE 官方帳號引導設定並同步至員工端。';render()" class="h-9 px-3.5 rounded-lg bg-[#06C755] hover:opacity-95 text-white font-bold cursor-pointer">套用</button>
                 </div>
               </div>
