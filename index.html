@@ -5716,6 +5716,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       App.storeSettings.adminDraft = { name: '', title: '儲備店長', role: 'STORE_MANAGER', contact: '' };
       App.toast = `已新增管理員「${d.name.trim()}」。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
     }
     function updateAdminRole(id, newRole) {
       const adm = App.storeSettings.admins.find(a => a.id === id);
@@ -5724,6 +5725,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       const rName = (STORE_ROLE_DEFS.find(r => r.code === newRole) || {}).name || newRole;
       App.toast = `已將「${adm.name}」的管理權限調整為【${rName}】。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
     }
     function toggleAdminActive(id) {
       const adm = App.storeSettings.admins.find(a => a.id === id);
@@ -5731,6 +5733,19 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       adm.active = !adm.active;
       App.toast = adm.active ? `已啟用「${adm.name}」管理帳號。` : `已停用「${adm.name}」管理權限。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+    }
+    function removeStoreAdmin(id) {
+      if ((App.storeSettings.admins || []).length <= 1) {
+        App.toast = '至少需保留 1 位管理員。';
+        render();
+        return;
+      }
+      const adm = App.storeSettings.admins.find(a => a.id === id);
+      App.storeSettings.admins = App.storeSettings.admins.filter(a => a.id !== id);
+      App.toast = `已移除管理員「${adm ? adm.name : ''}」。`;
+      render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
     }
 
     // ============================================================================
@@ -8433,6 +8448,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                             <button type="button" onclick="toggleAdminActive('${a.id}')" class="px-2 py-1 rounded-full text-[10px] font-semibold cursor-pointer border ${a.active ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}">
                               ${a.active ? '啟用中' : '已停用'}
                             </button>
+                            ${st.admins.length > 1 ? `<button type="button" onclick="removeStoreAdmin('${a.id}')" class="px-2 py-1 rounded-full text-[10px] font-semibold cursor-pointer border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100">移除</button>` : ''}
                           </div>
                         </div>
                         <div class="flex flex-wrap gap-1">
