@@ -3994,19 +3994,19 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
         const img = new Image();
         img.onload = () => {
           try {
-            const maxW = 1400;
+            const maxW = 1024;
             const origW = img.width || 1000;
             const origH = img.height || 650;
             const scale = origW > maxW ? (maxW / origW) : 1;
             const w = Math.max(1, Math.round(origW * scale));
             const h = Math.max(1, Math.round(origH * scale));
 
-            // 1. 壓縮後的原彩圖（供 Gemini AI 視覺辨識，約 100–200KB，快速又清晰）
+            // 1. 輕量壓縮原彩圖（約 50–90KB，手機行動網路秒傳給 Gemini AI 視覺辨識）
             const cColor = document.createElement('canvas');
             cColor.width = w; cColor.height = h;
             const ctxC = cColor.getContext('2d');
             ctxC.drawImage(img, 0, 0, w, h);
-            const resizedDataUrl = cColor.toDataURL('image/jpeg', 0.86);
+            const resizedDataUrl = cColor.toDataURL('image/jpeg', 0.78);
 
             // 2. 灰階＋自動對比拉伸圖（濾除身分證彩虹底紋，供本機 Tesseract 備援使用）
             const cGray = document.createElement('canvas');
@@ -4030,7 +4030,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
               d[i] = d[i + 1] = d[i + 2] = norm;
             }
             ctxG.putImageData(imgData, 0, 0);
-            const enhancedDataUrl = cGray.toDataURL('image/jpeg', 0.9);
+            const enhancedDataUrl = cGray.toDataURL('image/jpeg', 0.88);
             resolve({ resizedDataUrl, enhancedDataUrl });
           } catch (e) {
             resolve({ resizedDataUrl: rawUrl, enhancedDataUrl: rawUrl });
@@ -4046,8 +4046,8 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       if (aiRes.status === 401) return 'Supabase hr-ocr 尚未關閉 Verify JWT（HTTP 401）';
       if (aiRes.status === 404) return 'Supabase 尚未部署名為 hr-ocr 的 Edge Function（HTTP 404）';
       if (aiRes.code === 'MISSING_API_KEY') return 'Supabase Secrets 尚未設定 GEMINI_API_KEY';
-      if (aiRes.code === 'GEMINI_API_ERROR') return `Gemini API 回報錯誤：${String(aiRes.error || aiRes.status || '').slice(0, 120)}`;
-      if (aiRes.code === 'NETWORK_ERROR' && /abort/i.test(String(aiRes.error || ''))) return 'AI 辨識逾時（請更新最新版 hr-ocr 程式以關閉思考延遲）';
+      if (aiRes.code === 'GEMINI_API_ERROR') return `Gemini API 回報錯誤：${String(aiRes.error || aiRes.status || '').slice(0, 140)}`;
+      if (aiRes.code === 'NETWORK_ERROR' && /abort/i.test(String(aiRes.error || ''))) return 'AI 辨識逾時（請更新最新版 hr-ocr 並確認網路順暢）';
       return aiRes.error || aiRes.code || '雲端 AI 辨識暫時無法使用';
     }
 
@@ -4064,7 +4064,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           })();
       try {
         const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = ctrl ? setTimeout(() => ctrl.abort(), 25000) : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 45000) : null;
         const res = await fetch(`${baseUrl}/functions/v1/hr-ocr`, {
           method: 'POST',
           headers: {

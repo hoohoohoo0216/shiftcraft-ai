@@ -19,73 +19,55 @@ function jsonResp(body: Record<string, unknown>, status = 200) {
 function buildPrompt(docType: string): string {
   if (docType === 'ID_FRONT') {
     return [
-      '你是一位專精台灣人事建檔的證件辨識專家。請仔細辨識這張「中華民國國民身分證（正面）」照片（即使照片有旋轉、歪斜、浮水印或反光也請正確讀取）。',
-      '請只回傳純 JSON 物件（不要 markdown），欄位如下（無法辨識的欄位請回傳空字串 ""）：',
-      '{',
-      '  "name": "中文姓名（繁體中文、去除空格，例：王小明）",',
-      '  "nationalId": "10碼身分證統一編號（大寫英文字母開頭+9位數字，例：A123456789）",',
-      '  "birthDate": "出生年月日，務必轉換為台灣民國年 3碼格式 YYY/MM/DD（例：民國85年5月12日 → 085/05/12）"',
-      '}',
+      '辨識這張台灣「國民身分證（正面）」照片（即使歪斜或反光也請正確讀取）。只回傳純 JSON（無 markdown）：',
+      '{"name":"中文姓名去空白","nationalId":"10碼身分證字號大寫","birthDate":"民國年3碼YYY/MM/DD，例民國72年2月16日→072/02/16"}',
     ].join('\n');
   }
   if (docType === 'ID_BACK') {
     return [
-      '你是一位專精台灣人事建檔的證件辨識專家。請仔細辨識這張「中華民國國民身分證（反面）」照片（即使照片有旋轉、歪斜或反光也請正確讀取）。',
-      '請只回傳純 JSON 物件（不要 markdown），欄位如下（無法辨識請回傳空字串 ""）：',
-      '{',
-      '  "registeredAddress": "完整戶籍住址（繁體中文，去除多餘空白，例：台北市中山區南京西路12號3樓）",',
-      '  "emergencyName": "若配偶欄有姓名則填「姓名(配偶)」，否則若父或母欄有姓名則填「姓名(父)」或「姓名(母)」，無則空字串"',
-      '}',
+      '辨識這張台灣「國民身分證（反面）」照片。只回傳純 JSON（無 markdown）：',
+      '{"registeredAddress":"完整戶籍住址繁體中文去空白","emergencyName":"配偶欄姓名(配偶)或父母欄姓名(父/母)，無則空字串"}',
     ].join('\n');
   }
   if (docType === 'ARC_FRONT') {
     return [
-      '你是一位專精台灣人事建檔的外僑居留證（ARC）辨識專家。請仔細辨識這張居留證正面照片。',
-      '請只回傳純 JSON 物件（不要 markdown），欄位如下（無法辨識請回傳空字串 ""）：',
-      '{',
-      '  "name": "中文姓名（若無中文則填英文全名）",',
-      '  "nationalId": "10碼統一證號（大寫英文字母開頭，共10碼）",',
-      '  "birthDate": "出生日期，請將西元年減1911轉為台灣民國年 YYY/MM/DD（例：1998/09/03 → 087/09/03）",',
-      '  "arcExpiryDate": "居留期限西元格式 YYYY-MM-DD（例：2028-06-30）"',
-      '}',
+      '辨識這張台灣「外僑居留證（ARC）正面」。只回傳純 JSON（無 markdown）：',
+      '{"name":"中文姓名或英文全名","nationalId":"10碼統一證號","birthDate":"西元減1911轉民國YYY/MM/DD","arcExpiryDate":"YYYY-MM-DD"}',
     ].join('\n');
   }
   if (docType === 'ARC_BACK') {
-    return [
-      '請仔細辨識這張台灣外僑居留證（ARC）反面照片的居留地址。',
-      '請只回傳純 JSON 物件（不要 markdown）：',
-      '{ "registeredAddress": "完整在台居留地址（繁體中文，無多餘空白）" }',
-    ].join('\n');
+    return '辨識這張台灣外僑居留證反面居留地址，只回傳純 JSON：{"registeredAddress":"完整在台居留地址"}';
   }
   if (docType === 'BANK_PASSBOOK') {
     return [
-      '你是一位專精台灣銀行與郵局存摺封面辨識的專家。請仔細辨識這張存摺封面或網銀帳號截圖（即使照片有旋轉、歪斜或反光也請正確讀取）。',
-      '請只回傳純 JSON 物件（不要 markdown），欄位如下（無法辨識請回傳空字串 ""）：',
-      '{',
-      '  "bankCode": "3碼台灣金融機構代碼（例：822=中國信託, 013=國泰世華, 808=玉山, 812=台新, 700=中華郵政/郵局, 012=台北富邦, 004=臺灣銀行, 005=土地銀行, 006=合作金庫, 007=第一銀行, 008=華南銀行, 009=彰化銀行, 011=上海商銀, 017=兆豐, 050=臺灣企銀, 052=渣打, 081=匯豐, 103=新光, 803=聯邦, 805=遠東, 806=元大, 807=永豐, 809=凱基, 810=星展, 823=將來銀行, 824=LINE Bank, 826=樂天）",',
-      '  "bankName": "銀行中文名稱",',
-      '  "accountNumber": "完整存摺帳號純數字（務必去除所有連字號-與空格，若為郵局700則為局號7碼+帳號7碼共14碼純數字）",',
-      '  "accountHolder": "存摺戶名（中文姓名，若無則空字串）"',
-      '}',
+      '辨識這張台灣銀行或郵局存摺封面／網銀帳號截圖。只回傳純 JSON（無 markdown）：',
+      '{"bankCode":"3碼銀行代碼(822中信,013國泰,808玉山,812台新,700郵局,012富邦,004台銀,005土銀,006合庫,007一銀,008華南,009彰銀,011上海,017兆豐,050台企,052渣打,081匯豐,103新光,803聯邦,805遠東,806元大,807永豐,809凱基,810星展,823將來,824連線,826樂天)","bankName":"銀行中文名","accountNumber":"純數字帳號去連字號(郵局700為局號7碼+帳號7碼共14碼)","accountHolder":"戶名無則空字串"}',
     ].join('\n');
   }
-  return [
-    '請辨識這張台灣勞動部工作許可函照片，只回傳純 JSON（不要 markdown）：',
-    '{ "workPermitNo": "發文字號", "workPermitExpiry": "許可期限 YYYY-MM-DD" }',
-  ].join('\n');
+  return '辨識台灣勞動部工作許可函，只回傳純 JSON：{"workPermitNo":"發文字號","workPermitExpiry":"YYYY-MM-DD"}';
 }
 
 const DEFAULT_MODELS = [
-  'gemini-3.5-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.1-flash-lite',
   'gemini-2.5-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.8-flash',
 ];
+
+function getFastThinkingConfig(model: string): Record<string, unknown> | null {
+  if (/^gemini-2\.5/i.test(model)) return { thinkingBudget: 0 };
+  if (/^gemini-3\.8/i.test(model)) return { thinkingLevel: 'low' };
+  if (/^gemini-3\./i.test(model)) return { thinkingLevel: 'minimal' };
+  return null;
+}
 
 async function discoverFallbackModels(apiKey: string, alreadyTried: Set<string>): Promise<string[]> {
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, { signal: ctrl.signal });
+    clearTimeout(timer);
     if (!res.ok) return [];
     const data = await res.json();
     const list = Array.isArray(data?.models) ? data.models : [];
@@ -99,7 +81,7 @@ async function discoverFallbackModels(apiKey: string, alreadyTried: Set<string>)
       if (/(tts|live|image|omni|embedding|aqa|robotics)/i.test(name)) continue;
       if (/flash/i.test(name)) discovered.push(name);
     }
-    return discovered.slice(0, 4);
+    return discovered.slice(0, 3);
   } catch {
     return [];
   }
@@ -107,25 +89,34 @@ async function discoverFallbackModels(apiKey: string, alreadyTried: Set<string>)
 
 async function callGeminiModel(model: string, apiKey: string, parts: Record<string, unknown>[], jsonMode: boolean) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const bodyObj: Record<string, unknown> = {
-    contents: [{ parts }],
-    safetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-    ],
-  };
-  if (jsonMode) {
-    bodyObj.generationConfig = { responseMimeType: 'application/json' };
+  const generationConfig: Record<string, unknown> = { maxOutputTokens: 512 };
+  if (jsonMode) generationConfig.responseMimeType = 'application/json';
+  const tc = getFastThinkingConfig(model);
+  if (tc) generationConfig.thinkingConfig = tc;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 11000);
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig,
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+        ],
+      }),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
+  } finally {
+    clearTimeout(timer);
   }
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyObj),
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, text };
 }
 
 async function runWithAutoModel(apiKey: string, parts: Record<string, unknown>[], jsonMode: boolean) {
@@ -141,7 +132,7 @@ async function runWithAutoModel(apiKey: string, parts: Record<string, unknown>[]
         if (r.ok) return { ok: true as const, model, text: r.text };
         errors.push(`${model}(${r.status})`);
       } catch (e) {
-        errors.push(`${model}(${e instanceof Error ? e.message : 'err'})`);
+        errors.push(`${model}(${e instanceof Error && e.name === 'AbortError' ? 'timeout' : 'err'})`);
       }
     }
     return null;
