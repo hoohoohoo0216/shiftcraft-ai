@@ -1925,6 +1925,179 @@
       render();
     }
 
+    const EMP_DECISION_SEEN_KEY = 'shiftcraft_emp_decision_seen_v1';
+    function getSeenDecisionKeys() {
+      try {
+        const raw = localStorage.getItem(EMP_DECISION_SEEN_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(arr) ? arr : []);
+      } catch (e) {
+        return new Set();
+      }
+    }
+    function ackEmployeeDecisionNotices(keys) {
+      const seen = getSeenDecisionKeys();
+      (keys || []).forEach(k => seen.add(k));
+      try { localStorage.setItem(EMP_DECISION_SEEN_KEY, JSON.stringify(Array.from(seen).slice(-200))); } catch (e) {}
+      render();
+    }
+
+    function getStoreLiffDeepLink(extraParams) {
+      const params = new URLSearchParams();
+      params.set('brand', App.multiStore.brandId || 'brand-shiftcraft-demo');
+      params.set('store', App.multiStore.activeStoreId || 'store-01');
+      if (extraParams && typeof extraParams === 'object') {
+        Object.keys(extraParams).forEach(k => {
+          if (extraParams[k]) params.set(k, String(extraParams[k]));
+        });
+      }
+      return `https://liff.line.me/${App.lineLiff.liffId}?${params.toString()}`;
+    }
+
+    function getStoreApproverLineUserIds(permKey) {
+      const admins = (App.storeSettings && App.storeSettings.admins) || [];
+      const perms = (App.storeSettings && App.storeSettings.permissions) || {};
+      const uids = new Set();
+      const matchedAdmins = [];
+      (App.employees || []).forEach(emp => {
+        if (!emp || !emp.lineUserId || isEmployeeResigned(emp)) return;
+        const empName = (emp.name || '').trim();
+        const adm = admins.find(a =>
+          a && a.active !== false && a.role && a.role !== 'STAFF' &&
+          ((a.employeeId && a.employeeId === emp.id) || (a.name && a.name.trim() === empName))
+        );
+        if (!adm) return;
+        const rolePerms = perms[adm.role] || {};
+        const canApprove = permKey
+          ? Boolean(rolePerms[permKey] || adm.role === 'OWNER')
+          : Boolean(rolePerms.approveLeave || rolePerms.approvePunch || adm.role === 'OWNER' || adm.role === 'STORE_MANAGER');
+        if (canApprove) {
+          uids.add(emp.lineUserId);
+          matchedAdmins.push({ id: emp.id, name: emp.name, role: adm.role, lineUserId: emp.lineUserId });
+        }
+      });
+      return { userIds: Array.from(uids), admins: matchedAdmins };
+    }
+
+    async function sendLinePushNotification(payload) {
+      const toList = Array.isArray(payload && payload.to) ? payload.to : (payload && payload.to ? [payload.to] : []);
+      const validTo = toList.map(x => String(x || '').trim()).filter(u => /^U[0-9a-f]{16,64}$/i.test(u));
+      if (validTo.length === 0) return { ok: false, code: 'NO_RECIPIENTS', error: '無已綁定 LINE 的通知對象' };
+      const baseUrl = String((App.cloud && App.cloud.url) || DEFAULT_CLOUD_CONFIG.url || '').replace(/\/+$/, '');
+      const anonKey = String((App.cloud && App.cloud.anonKey) || DEFAULT_CLOUD_CONFIG.anonKey || '');
+      if (!baseUrl || !anonKey) return { ok: false, code: 'NO_CLOUD', error: '未設定 Supabase 連線' };
+      try {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 7000) : null;
+        const res = await fetch(`${baseUrl}/functions/v1/line-notify`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': anonKey,
+            'Authorization': `Bearer ${anonKey}`,
+          },
+          body: JSON.stringify({ ...payload, to: validTo }),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        if (timer) clearTimeout(timer);
+        let data = {};
+        try { data = await res.json(); } catch (e) {}
+        if (!res.ok || !data.ok) {
+          return { ok: false, status: res.status, code: data.code || 'HTTP_' + res.status, error: data.error || `HTTP ${res.status}` };
+        }
+        return { ok: true, sent: data.sent || validTo.length };
+      } catch (err) {
+        return { ok: false, code: 'NETWORK_ERROR', error: err && err.message ? err.message : String(err) };
+      }
+    }
+
+    function notifyManagersOfNewRequest(opts) {
+      const { userIds } = getStoreApproverLineUserIds(opts.permKey);
+      if (!userIds.length) return Promise.resolve({ ok: false, code: 'NO_RECIPIENTS' });
+      const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
+      const empName = (opts.emp && opts.emp.name) || '員工';
+      const lines = [];
+      if (opts.date) lines.push(`日期：${opts.date}`);
+      if (opts.summary) lines.push(`內容：${opts.summary}`);
+      if (opts.reason) lines.push(`事由：${opts.reason}`);
+      return sendLinePushNotification({
+        to: userIds,
+        headerTitle: opts.headerTitle || '新的申請待簽核',
+        headerColor: opts.headerColor || '#0F766E',
+        storeName,
+        headline: `${empName} 送出了${opts.kindLabel || '申請'}`,
+        lines,
+        buttonLabel: '立即開啟 LINE 簽核',
+        buttonUrl: getStoreLiffDeepLink({ role: 'MANAGER', filter: opts.filter || 'ALL', tab: opts.tab || 'LIFF_LEAVE' }),
+        altText: `【${storeName}】${empName} 送出${opts.kindLabel || '申請'}（${opts.date || ''}），請前往簽核`,
+      });
+    }
+
+    function notifyEmployeeOfDecision(opts) {
+      const emp = opts.emp;
+      if (!emp || !emp.lineUserId) return Promise.resolve({ ok: false, code: 'NO_RECIPIENTS' });
+      const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
+      const approved = opts.decision === 'APPROVED';
+      const statusText = approved ? '已核准' : '未核准';
+      const lines = [];
+      if (opts.date) lines.push(`日期：${opts.date}`);
+      if (opts.summary) lines.push(`內容：${opts.summary}`);
+      if (opts.signedBy) lines.push(`簽核人：${opts.signedBy}`);
+      if (opts.managerNote) lines.push(`備註：${opts.managerNote}`);
+      return sendLinePushNotification({
+        to: [emp.lineUserId],
+        headerTitle: `${approved ? '✅' : '❌'} ${opts.kindLabel || '申請'}${statusText}`,
+        headerColor: approved ? '#06C755' : '#E11D48',
+        storeName,
+        headline: `您的${opts.kindLabel || '申請'}${statusText}`,
+        lines,
+        buttonLabel: '查看審核結果',
+        buttonUrl: getStoreLiffDeepLink({ tab: opts.tab || 'LIFF_LEAVE', phoneTab: opts.phoneTab || 'MY_RECORDS' }),
+        altText: `【${storeName}】您的${opts.kindLabel || '申請'}（${opts.date || ''}）${statusText}`,
+      });
+    }
+
+    async function sendTestLineNotification() {
+      const { userIds, admins } = getStoreApproverLineUserIds();
+      const targetIds = userIds.length
+        ? userIds
+        : ((App.lineLiff && App.lineLiff.profile && App.lineLiff.profile.userId) ? [App.lineLiff.profile.userId] : []);
+      if (!targetIds.length) {
+        App.toast = '⚠️ 目前尚無已綁定 LINE 的店長／老闆！請先用手機掃門市 QR Code 綁定自己的名字，並在右側管理員名單指派為老闆或店長。';
+        render();
+        return;
+      }
+      App.toast = '⏳ 正在發送 LINE 測試通知…';
+      render();
+      const storeName = (App.storeSettings && App.storeSettings.name) || '門市';
+      const res = await sendLinePushNotification({
+        to: targetIds,
+        headerTitle: '🔔 班匠 LINE 推播測試成功',
+        headerColor: '#06C755',
+        storeName,
+        headline: '雙向 LINE 簽核推播已連線！',
+        lines: [
+          `測試時間：${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`,
+          '員工提交請假／調班／加班／補卡時，主管將即時收到通知。',
+          '主管核准或駁回後，員工也會同步收到 LINE 結果通知。',
+        ],
+        buttonLabel: '開啟 LINE 簽核中心',
+        buttonUrl: getStoreLiffDeepLink({ role: 'MANAGER', filter: 'ALL' }),
+        altText: `【${storeName}】班匠 LINE 簽核推播測試成功！`,
+      });
+      if (res.ok) {
+        const names = admins.map(a => a.name).join('、') || '目前登入帳號';
+        App.toast = `✅ 已發送測試推播給 ${res.sent} 位主管（${names}）！請確認手機 LINE 官方帳號是否收到訊息。`;
+      } else if (res.code === 'MISSING_TOKEN') {
+        App.toast = '❌ 尚未在 Supabase Edge Function 設定 LINE_CHANNEL_ACCESS_TOKEN 密鑰。';
+      } else if (res.status === 404 || res.code === 'NETWORK_ERROR') {
+        App.toast = '❌ 尚未部署 Supabase Edge Function（名稱：line-notify），請先於 Supabase 後台完成部署。';
+      } else {
+        App.toast = `❌ LINE 推播發送失敗：${res.error || res.code}（請確認收件人已加入官方帳號好友）`;
+      }
+      render();
+    }
+
     function syncBoundLineEmployee() {
       const prof = App.lineLiff && App.lineLiff.profile;
       if (!prof || !prof.userId) return null;
@@ -2169,6 +2342,18 @@
         const targetTab = urlParams.get('tab');
         if (targetTab && ['SCHED', 'ATTENDANCE', 'LIFF_LEAVE', 'PAYROLL'].includes(targetTab)) {
           App.mainTab = targetTab;
+        }
+        const targetRole = urlParams.get('role');
+        if (targetRole === 'MANAGER') App.liffRole = 'MANAGER';
+        const targetFilter = urlParams.get('filter');
+        if (targetFilter && ['ALL', 'LEAVE', 'PUNCH'].includes(targetFilter)) {
+          App.liffMgrFilter = targetFilter;
+        }
+        const targetPhoneTab = urlParams.get('phoneTab');
+        if (targetPhoneTab && ['BALANCES', 'LEAVE_FORM', 'SWAP_FORM', 'OT_FORM', 'MY_RECORDS'].includes(targetPhoneTab)) {
+          App.liff.phoneTab = targetPhoneTab;
+        } else if (targetPhoneTab && ['PUNCH', 'MISSED_FORM'].includes(targetPhoneTab)) {
+          App.attendance.phoneTab = targetPhoneTab;
         }
 
         const hydrateLineProfileAndBinding = async () => {
@@ -4219,15 +4404,23 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       const bal = ensureLeaveBalance(emp.id);
       const annRemain = Math.max(0, bal.annualTotal - bal.annualUsed);
       if (d.leaveType === 'ANNUAL' && d.hours > annRemain) { App.toast = `${emp.name} 特休剩餘僅 ${annRemain}h，不足申請 ${d.hours}h。`; render(); return; }
+      const reqSummary = `${meta.label} ${d.hours} 小時｜代理：${dep ? dep.name : '門市調度'}`;
+      const reqReason = d.reason.trim() || '個人事務請假';
       App.liff.requests.unshift({
         id: 'ap-' + Date.now(), kind: 'LEAVE', employeeId: emp.id, leaveType: d.leaveType, date: reqDate, hours: Number(d.hours) || 8, deputyId: d.deputyId,
-        summary: `${meta.label} ${d.hours} 小時｜代理：${dep ? dep.name : '門市調度'}`, reason: d.reason.trim() || '個人事務請假', proofName: d.proofName || '',
-        status: 'PENDING', managerNote: '', createdAt: '剛剛 via LINE LIFF',
+        summary: reqSummary, reason: reqReason, proofName: d.proofName || '',
+        status: 'PENDING', managerNote: '', createdAt: `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()} via LINE LIFF`,
         aiCheck: `AI 預檢通過：${meta.payRule}；核准後將自動扣除假別餘額並同步更新班表。`,
       });
       App.liff.leaveDraft.reason = ''; App.liff.phoneTab = 'MY_RECORDS';
       App.toast = `${emp.name} 已送出「${meta.short} ${d.hours}h」申請至店長簽核中心。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      notifyManagersOfNewRequest({
+        permKey: 'approveLeave', filter: 'LEAVE', tab: 'LIFF_LEAVE',
+        headerTitle: '📝 新的請假申請待簽核', headerColor: '#0F766E',
+        kindLabel: '請假申請', emp, date: reqDate, summary: reqSummary, reason: reqReason,
+      });
     }
 
     function submitLiffSwapRequest(e) {
@@ -4240,15 +4433,23 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       if (!target || target.id === emp.id) { App.toast = '請選擇其他同事作為互調夥伴。'; render(); return; }
       const myShift = App.sched.shifts.find(s => s.employeeId === emp.id && s.date === reqDate);
       const tgtShift = App.sched.shifts.find(s => s.employeeId === target.id && s.date === reqDate);
+      const reqSummary = `${reqDate.slice(5)} ${myShift ? SHIFT_TEMPLATES[myShift.shiftCode].shortLabel : '休假'} ⇄ ${target.name} (${tgtShift ? SHIFT_TEMPLATES[tgtShift.shiftCode].shortLabel : '休假'})`;
+      const reqReason = d.reason.trim() || '已與同事溝通同意互調班次';
       App.liff.requests.unshift({
         id: 'sw-' + Date.now(), kind: 'SWAP', employeeId: emp.id, date: reqDate, deputyId: target.id,
-        summary: `${reqDate.slice(5)} ${myShift ? SHIFT_TEMPLATES[myShift.shiftCode].shortLabel : '休假'} ⇄ ${target.name} (${tgtShift ? SHIFT_TEMPLATES[tgtShift.shiftCode].shortLabel : '休假'})`,
-        reason: d.reason.trim() || '已與同事溝通同意互調班次', proofName: '', status: 'PENDING', managerNote: '', createdAt: '剛剛 via LINE LIFF',
+        summary: reqSummary,
+        reason: reqReason, proofName: '', status: 'PENDING', managerNote: '', createdAt: `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()} via LINE LIFF`,
         aiCheck: `勞基法預檢通過：${target.name} 具備站點技能，互調後輪班間隔符合 ≥ 11 小時。`,
       });
       App.liff.swapDraft.reason = ''; App.liff.phoneTab = 'MY_RECORDS';
       App.toast = `${emp.name} 已送出調班申請，等待店長線上簽核。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      notifyManagersOfNewRequest({
+        permKey: 'approveLeave', filter: 'LEAVE', tab: 'LIFF_LEAVE',
+        headerTitle: '🔄 新的調班申請待簽核', headerColor: '#4F46E5',
+        kindLabel: '調班申請', emp, date: reqDate, summary: reqSummary, reason: reqReason,
+      });
     }
 
     function submitLiffOvertimeRequest(e) {
@@ -4260,27 +4461,36 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       if (!emp) return;
       const hrs = Math.max(0.5, Math.min(12, Math.round((Number(d.hours) || 1) * 2) / 2));
       const comp = d.compensation === 'COMP_OFF' ? 'COMP_OFF' : 'PAY';
+      const reqDate = d.date || todayTw;
+      const reqSummary = `加班 ${hrs} 小時｜${comp === 'COMP_OFF' ? '轉加班補休 (1:1)' : '領加班費 (1.34/1.67倍)'}`;
+      const reqReason = (d.reason || '').trim() || '現場尖峰忙碌延後收班';
       App.liff.requests.unshift({
         id: 'ot-' + Date.now(),
         kind: 'OVERTIME',
         employeeId: emp.id,
-        date: d.date || todayTw,
+        date: reqDate,
         hours: hrs,
         compensation: comp,
-        summary: `加班 ${hrs} 小時｜${comp === 'COMP_OFF' ? '轉加班補休 (1:1)' : '領加班費 (1.34/1.67倍)'}`,
-        reason: (d.reason || '').trim() || '現場尖峰忙碌延後收班',
+        summary: reqSummary,
+        reason: reqReason,
         proofName: '',
         status: 'PENDING',
         managerNote: '',
-        createdAt: '剛剛 via LINE LIFF',
+        createdAt: `${todayTw} ${getTaipeiTimeHHMM()} via LINE LIFF`,
         aiCheck: comp === 'COMP_OFF'
           ? `依勞基法第 32-1 條：核准後將自動加入「加班補休」餘額 +${hrs}h。`
           : `依勞基法第 24 條：前 2 小時 1.34 倍、第 3 小時起 1.67 倍，核准後將自動同步寫入當月薪資結算。`,
       });
       App.liff.overtimeDraft.reason = '';
-      App.liff.phoneTab = 'BALANCES';
+      App.liff.phoneTab = 'MY_RECORDS';
       App.toast = `${emp.name} 已送出「加班 ${hrs}h（${comp === 'COMP_OFF' ? '轉補休' : '領加班費'}）」申請，等待店長簽核。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      notifyManagersOfNewRequest({
+        permKey: 'approveLeave', filter: 'LEAVE', tab: 'LIFF_LEAVE',
+        headerTitle: '⏱️ 新的加班申請待簽核', headerColor: '#7C3AED',
+        kindLabel: '加班申請', emp, date: reqDate, summary: reqSummary, reason: reqReason,
+      });
     }
 
     function getActiveLineApprover(targetDate) {
@@ -4302,6 +4512,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
       req.signedBy = `${ap.name} (${ap.roleLabel})`;
+      req.reviewedAt = `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
         ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准並同步` : '已透過 LINE 核准並同步排班、假別與薪資') : '已核准，系統已同步排班、假別與薪資')
         : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回` : '已透過 LINE 駁回，請另行協調') : '未核准，請另行協調'));
@@ -4349,6 +4560,13 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
         }
       } else { App.toast = `已駁回 ${emp ? emp.name : ''} 之申請。`; }
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      const kindLabel = req.kind === 'LEAVE' ? '請假申請' : req.kind === 'OVERTIME' ? '加班申請' : '調班申請';
+      notifyEmployeeOfDecision({
+        kindLabel, emp, date: req.date, summary: req.summary,
+        decision, signedBy: req.signedBy, managerNote: req.managerNote,
+        tab: 'LIFF_LEAVE', phoneTab: 'MY_RECORDS',
+      });
     }
 
     function openLineManagerApproval(filter) {
@@ -4601,14 +4819,22 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       const reqDate = d.date || getTaipeiTodayStr();
       const wit = App.employees.find(x => x.id === d.witnessId);
       const matchLog = App.attendance.logs.find(l => l.employeeId === emp.id && l.date === reqDate);
+      const reqReason = d.reason.trim() || '門市尖峰忙碌漏刷卡';
+      const typeLabel = d.type === 'MISSING_IN' ? `補上班卡 ${d.reqIn}` : d.type === 'MISSING_OUT' ? `補下班卡 ${d.reqOut}` : `補上下班 ${d.reqIn}–${d.reqOut}`;
       App.attendance.corrections.unshift({
         id: 'mp-' + Date.now(), logId: matchLog ? matchLog.id : '', employeeId: emp.id, date: reqDate, type: d.type, reqIn: d.reqIn, reqOut: d.reqOut,
-        witnessName: wit ? `${wit.name}` : '當班主管', reason: d.reason.trim() || '門市尖峰忙碌漏刷卡',
-        evidence: '附當班主管見證與出勤比對', status: 'PENDING', managerNote: '', createdAt: '剛剛 via LINE LIFF',
+        witnessName: wit ? `${wit.name}` : '當班主管', reason: reqReason,
+        evidence: '附當班主管見證與出勤比對', status: 'PENDING', managerNote: '', createdAt: `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()} via LINE LIFF`,
       });
       App.attendance.draft.reason = '';
       App.toast = `${emp.name} 已送出 ${reqDate} 補卡申請至簽核中心。`;
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      notifyManagersOfNewRequest({
+        permKey: 'approvePunch', filter: 'PUNCH', tab: 'ATTENDANCE',
+        headerTitle: '📌 新的漏打卡補登申請待簽核', headerColor: '#D97706',
+        kindLabel: '補打卡申請', emp, date: reqDate, summary: typeLabel, reason: reqReason,
+      });
     }
 
     function reviewMissedPunch(mpId, decision, viaLine) {
@@ -4619,6 +4845,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       req.status = decision;
       if (viaLine) req.signedVia = 'LINE';
       req.signedBy = `${ap.name} (${ap.roleLabel})`;
+      req.reviewedAt = `${getTaipeiTodayStr()} ${getTaipeiTimeHHMM()}`;
       req.managerNote = (noteEl && noteEl.value.trim()) || (decision === 'APPROVED'
         ? (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 核准補登` : '已透過 LINE 核對無誤，准予補登') : '核對無誤，准予補登')
         : (viaLine ? (ap.isDelegated ? `已由代理副店長 ${ap.name} 透過 LINE 駁回補登` : '已透過 LINE 駁回，時間與紀錄不符') : '時間與紀錄不符'));
@@ -4630,9 +4857,16 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           if (req.type === 'MISSING_OUT' || req.type === 'BOTH') log.clockOut = req.reqOut;
           log.status = 'CORRECTED'; log.note = `已補卡核准`;
         }
-        App.toast = `已核准 ${emp.name} (${req.date}) 補卡申請，出勤與薪資全勤判定已同步修復。`;
-      } else { App.toast = `已駁回 ${emp.name} 之補卡申請。`; }
+        App.toast = `已核准 ${emp ? emp.name : ''} (${req.date}) 補卡申請，出勤與薪資全勤判定已同步修復。`;
+      } else { App.toast = `已駁回 ${emp ? emp.name : ''} 之補卡申請。`; }
       render();
+      pushStoreToCloud(App.multiStore.activeStoreId);
+      const typeLabel = req.type === 'MISSING_IN' ? `補上班卡 ${req.reqIn}` : req.type === 'MISSING_OUT' ? `補下班卡 ${req.reqOut}` : `補上下班 ${req.reqIn}–${req.reqOut}`;
+      notifyEmployeeOfDecision({
+        kindLabel: '補打卡申請', emp, date: req.date, summary: typeLabel,
+        decision, signedBy: req.signedBy, managerNote: req.managerNote,
+        tab: 'ATTENDANCE', phoneTab: 'MISSED_FORM',
+      });
     }
 
     function getFilteredAttendanceLogs() {
@@ -7965,8 +8199,11 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 <div class="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 class="text-sm font-bold text-slate-900">門市管理員名單與權限指派 (${st.admins.length} 位)</h3>
-                    <p class="text-[11px] text-slate-500 mt-0.5">指派角色後即時連動左側帳號權限與 LINE 簽核推播</p>
+                    <p class="text-[11px] text-slate-500 mt-0.5">指派角色後即時連動左側帳號權限與 LINE 雙向簽核推播</p>
                   </div>
+                  <button type="button" onclick="sendTestLineNotification()" class="h-8 px-3 rounded-lg bg-[#06C755] hover:opacity-95 text-white text-[11px] font-bold cursor-pointer shadow-xs">
+                    🔔 測試發送 LINE 通知
+                  </button>
                 </div>
 
                 <div class="p-3.5 border-b border-[var(--border)] bg-slate-50/60">
@@ -7990,12 +8227,14 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                   ${st.admins.map(a => {
                     const rolePerms = st.permissions[a.role] || {};
                     const permChips = STORE_PERM_DEFS.filter(p => rolePerms[p.key]).map(p => p.label.split(' ')[0].replace(/與.*/, '').replace(/及.*/, ''));
+                    const matchedEmp = App.employees.find(e => e && !isEmployeeResigned(e) && ((a.employeeId && e.id === a.employeeId) || (a.name && (e.name || '').trim() === a.name.trim())));
+                    const realLineBound = Boolean(matchedEmp && matchedEmp.lineUserId);
                     return `
                       <div class="p-3.5 space-y-2 hover:bg-slate-50/60 transition ${!a.active ? 'opacity-55' : ''}">
                         <div class="flex flex-wrap items-center justify-between gap-2">
                           <div class="min-w-0">
                             <div class="font-bold text-slate-900 text-xs">${a.name} <span class="font-normal text-slate-500">· ${a.title}</span></div>
-                            <div class="text-[11px] text-slate-500 mono-num mt-0.5">${a.contact} · <span class="font-semibold ${a.lineBound ? 'text-emerald-600' : 'text-amber-600'}">${a.lineBound ? '已綁定 LINE 簽核推播' : '待接受 LINE 綁定邀請'}</span></div>
+                            <div class="text-[11px] text-slate-500 mono-num mt-0.5">${a.contact} · <span class="font-semibold ${realLineBound ? 'text-emerald-600' : 'text-amber-600'}">${realLineBound ? '🟢 已綁定 LINE 推播通知' : '🟡 尚未綁定手機 LINE（綁定姓名後自動接收推播）'}</span></div>
                           </div>
                           <div class="flex items-center gap-1.5 shrink-0">
                             <select onchange="updateAdminRole('${a.id}', this.value)" class="h-7 px-2 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold cursor-pointer">
@@ -8898,6 +9137,51 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                 }
                 return '';
               })()}
+              ${(() => {
+                const seen = getSeenDecisionKeys();
+                const empDecided = [
+                  ...(App.liff.requests || []).filter(r => r.employeeId === emp.id && r.status !== 'PENDING').map(r => ({
+                    key: `req:${r.id}:${r.status}`,
+                    kind: r.kind === 'LEAVE' ? '請假申請' : r.kind === 'OVERTIME' ? '加班申請' : '調班申請',
+                    date: r.date,
+                    summary: r.summary,
+                    status: r.status,
+                    signedBy: r.signedBy || '',
+                    note: r.managerNote || '',
+                  })),
+                  ...(App.attendance.corrections || []).filter(c => c.employeeId === emp.id && c.status !== 'PENDING').map(c => ({
+                    key: `mp:${c.id}:${c.status}`,
+                    kind: '補打卡申請',
+                    date: c.date,
+                    summary: c.type === 'MISSING_IN' ? `補上班卡 ${c.reqIn}` : c.type === 'MISSING_OUT' ? `補下班卡 ${c.reqOut}` : `補上下班 ${c.reqIn}–${c.reqOut}`,
+                    status: c.status,
+                    signedBy: c.signedBy || '',
+                    note: c.managerNote || '',
+                  })),
+                ].filter(item => !seen.has(item.key));
+                if (!empDecided.length) return '';
+                const keysJson = JSON.stringify(empDecided.map(x => x.key)).replace(/"/g, '&quot;');
+                return `
+                  <div class="bg-white border-2 border-teal-300 rounded-xl p-3 space-y-2 shadow-xs">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-bold text-slate-900 text-xs">🔔 審核結果通知（${empDecided.length} 筆）</span>
+                      <button type="button" onclick="ackEmployeeDecisionNotices(${keysJson})" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold cursor-pointer">全部已讀</button>
+                    </div>
+                    <div class="space-y-1.5">
+                      ${empDecided.slice(0, 4).map(n => `
+                        <div class="p-2 rounded-lg border ${n.status==='APPROVED' ? 'bg-emerald-50/70 border-emerald-200' : 'bg-rose-50/70 border-rose-200'} space-y-0.5">
+                          <div class="flex items-center justify-between gap-1">
+                            <span class="font-bold text-[11px] ${n.status==='APPROVED' ? 'text-emerald-900' : 'text-rose-900'}">${n.status==='APPROVED' ? '✅' : '❌'} ${n.kind}${n.status==='APPROVED' ? '已核准' : '未核准'}</span>
+                            <span class="mono-num text-[10px] text-slate-500">${n.date}</span>
+                          </div>
+                          <div class="text-[11px] text-slate-700">${n.summary}</div>
+                          ${n.note ? `<div class="text-[10px] text-slate-600">備註：${n.note}${n.signedBy ? `（${n.signedBy}）` : ''}</div>` : ''}
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                `;
+              })()}
               ${mode === 'PAYROLL' && slip ? `
                 <div class="bg-white rounded-xl p-4 border border-slate-200 space-y-3">
                   <div class="flex items-center justify-between">
@@ -8942,11 +9226,12 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
               ` : ''}
 
               ${mode === 'LEAVE' ? `
-                <div class="grid grid-cols-4 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
-                  <button onclick="App.liff.phoneTab='BALANCES';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='BALANCES'?'bg-[#06C755] text-white':'text-slate-600'}">假別餘額</button>
+                <div class="grid grid-cols-5 bg-white rounded-lg p-1 border border-slate-200 font-semibold text-[11px]">
+                  <button onclick="App.liff.phoneTab='BALANCES';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='BALANCES'?'bg-[#06C755] text-white':'text-slate-600'}">餘額</button>
                   <button onclick="App.liff.phoneTab='LEAVE_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='LEAVE_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">請假</button>
                   <button onclick="App.liff.phoneTab='SWAP_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='SWAP_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">調班</button>
-                  <button onclick="App.liff.phoneTab='OT_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='OT_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">申請加班</button>
+                  <button onclick="App.liff.phoneTab='OT_FORM';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='OT_FORM'?'bg-[#06C755] text-white':'text-slate-600'}">加班</button>
+                  <button onclick="App.liff.phoneTab='MY_RECORDS';render()" class="py-1.5 rounded-md cursor-pointer ${App.liff.phoneTab==='MY_RECORDS'?'bg-[#06C755] text-white':'text-slate-600'}">審核</button>
                 </div>
                 ${App.liff.phoneTab === 'BALANCES' ? (() => {
                   const annRem = Math.max(0, bal.annualTotal - bal.annualUsed);
@@ -9060,6 +9345,57 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                         `).join('')}
                       </div>
                     ` : ''}
+                  `;
+                })() : App.liff.phoneTab === 'MY_RECORDS' ? (() => {
+                  const myAll = [
+                    ...(App.liff.requests || []).filter(r => r.employeeId === emp.id).map(r => ({
+                      kind: r.kind === 'LEAVE' ? '請假單' : r.kind === 'OVERTIME' ? '加班單' : '調班單',
+                      date: r.date,
+                      summary: r.summary,
+                      reason: r.reason,
+                      status: r.status,
+                      signedBy: r.signedBy || '',
+                      managerNote: r.managerNote || '',
+                      createdAt: r.createdAt || '',
+                    })),
+                    ...(App.attendance.corrections || []).filter(c => c.employeeId === emp.id).map(c => ({
+                      kind: '補卡單',
+                      date: c.date,
+                      summary: c.type === 'MISSING_IN' ? `補上班卡 ${c.reqIn}` : c.type === 'MISSING_OUT' ? `補下班卡 ${c.reqOut}` : `補上下班 ${c.reqIn}–${c.reqOut}`,
+                      reason: c.reason,
+                      status: c.status,
+                      signedBy: c.signedBy || '',
+                      managerNote: c.managerNote || '',
+                      createdAt: c.createdAt || '',
+                    })),
+                  ];
+                  if (!myAll.length) {
+                    return `<div class="bg-white rounded-xl p-6 border border-slate-200 text-center text-slate-400">尚無申請與審核紀錄</div>`;
+                  }
+                  return `
+                    <div class="space-y-2.5">
+                      ${myAll.map(item => `
+                        <div class="bg-white rounded-xl p-3 border ${item.status==='APPROVED' ? 'border-emerald-200' : item.status==='REJECTED' ? 'border-rose-200' : 'border-amber-200'} space-y-1.5 shadow-xs">
+                          <div class="flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-1.5">
+                              <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-bold text-[10px]">${item.kind}</span>
+                              <span class="mono-num font-bold text-slate-900">${item.date}</span>
+                            </div>
+                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${item.status==='APPROVED' ? 'bg-emerald-50 text-emerald-700' : item.status==='REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}">
+                              ${item.status==='APPROVED' ? '✅ 已核准' : item.status==='REJECTED' ? '❌ 已駁回' : '⏳ 待簽核'}
+                            </span>
+                          </div>
+                          <div class="font-semibold text-slate-800">${item.summary}</div>
+                          ${item.reason ? `<div class="text-[11px] text-slate-500">事由：${item.reason}</div>` : ''}
+                          ${item.status !== 'PENDING' ? `
+                            <div class="p-2 rounded-lg text-[11px] ${item.status==='APPROVED' ? 'bg-emerald-50/70 text-emerald-900' : 'bg-rose-50/70 text-rose-900'}">
+                              ${item.signedBy ? `<div class="font-bold">簽核人：${item.signedBy}</div>` : ''}
+                              ${item.managerNote ? `<div>備註：${item.managerNote}</div>` : ''}
+                            </div>
+                          ` : ''}
+                        </div>
+                      `).join('')}
+                    </div>
                   `;
                 })() : (() => {
                   const swapDate = liffWeekDays.some(d => d.date === App.liff.swapDraft.date) ? App.liff.swapDraft.date : todayTw;
@@ -9184,15 +9520,35 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                         }).join('')}
                       </div>
                     </div>
-                  ` : `
-                    <form onsubmit="submitMissedPunch(event)" class="bg-white rounded-xl p-3.5 border border-slate-200 space-y-2.5">
-                      <div class="font-bold text-slate-900">漏打卡補登申請</div>
-                      <input type="date" value="${App.attendance.draft.date || todayTw}" onchange="App.attendance.draft.date=this.value" class="w-full h-8 px-2 rounded border border-slate-200 mono-num" />
-                      <div class="grid grid-cols-2 gap-2"><input type="time" value="${App.attendance.draft.reqIn}" onchange="App.attendance.draft.reqIn=this.value" class="h-8 px-2 rounded border border-slate-200 mono-num" /><input type="time" value="${App.attendance.draft.reqOut}" onchange="App.attendance.draft.reqOut=this.value" class="h-8 px-2 rounded border border-slate-200 mono-num" /></div>
-                      <input value="${App.attendance.draft.reason}" oninput="App.attendance.draft.reason=this.value" placeholder="補卡原因說明" class="w-full h-8 px-2.5 rounded border border-slate-200" />
-                      <button type="submit" class="w-full h-9 rounded-lg bg-[#06C755] text-white font-bold cursor-pointer">送出補卡申請</button>
-                    </form>
-                  `}
+                  ` : (() => {
+                    const myMps = (App.attendance.corrections || []).filter(c => c.employeeId === emp.id).slice(0, 6);
+                    return `
+                      <form onsubmit="submitMissedPunch(event)" class="bg-white rounded-xl p-3.5 border border-slate-200 space-y-2.5">
+                        <div class="font-bold text-slate-900">漏打卡補登申請</div>
+                        <input type="date" value="${App.attendance.draft.date || todayTw}" onchange="App.attendance.draft.date=this.value" class="w-full h-8 px-2 rounded border border-slate-200 mono-num" />
+                        <div class="grid grid-cols-2 gap-2"><input type="time" value="${App.attendance.draft.reqIn}" onchange="App.attendance.draft.reqIn=this.value" class="h-8 px-2 rounded border border-slate-200 mono-num" /><input type="time" value="${App.attendance.draft.reqOut}" onchange="App.attendance.draft.reqOut=this.value" class="h-8 px-2 rounded border border-slate-200 mono-num" /></div>
+                        <input value="${App.attendance.draft.reason}" oninput="App.attendance.draft.reason=this.value" placeholder="補卡原因說明" class="w-full h-8 px-2.5 rounded border border-slate-200" />
+                        <button type="submit" class="w-full h-9 rounded-lg bg-[#06C755] text-white font-bold cursor-pointer">送出補卡申請</button>
+                      </form>
+                      ${myMps.length ? `
+                        <div class="bg-white rounded-xl p-3 border border-slate-200 space-y-2">
+                          <div class="text-[11px] font-bold text-slate-700">近期補卡申請與審核狀態</div>
+                          ${myMps.map(c => `
+                            <div class="p-2 rounded-lg border ${c.status==='APPROVED'?'border-emerald-200 bg-emerald-50/40':c.status==='REJECTED'?'border-rose-200 bg-rose-50/40':'border-amber-200 bg-amber-50/30'} space-y-1">
+                              <div class="flex items-center justify-between text-[11px]">
+                                <span class="mono-num font-bold text-slate-800">${c.date}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${c.status==='APPROVED'?'bg-emerald-100 text-emerald-800':c.status==='REJECTED'?'bg-rose-100 text-rose-800':'bg-amber-100 text-amber-800'}">
+                                  ${c.status==='APPROVED'?'✅ 已核准':c.status==='REJECTED'?'❌ 已駁回':'⏳ 待簽核'}
+                                </span>
+                              </div>
+                              <div class="text-[11px] text-slate-600 mono-num">${c.reqIn} – ${c.reqOut}</div>
+                              ${c.status !== 'PENDING' && c.managerNote ? `<div class="text-[10px] text-slate-600">備註：${c.managerNote}</div>` : ''}
+                            </div>
+                          `).join('')}
+                        </div>
+                      ` : ''}
+                    `;
+                  })()}
                 `;
               })() : ''}
               `}
