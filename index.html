@@ -4041,15 +4041,30 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
       });
     }
 
-    async function callCloudAiVisionOcr(docType, resizedDataUrl) {
+    function explainCloudOcrFailure(aiRes) {
+      if (!aiRes) return '無法連線雲端 AI 辨識';
+      if (aiRes.status === 401) return 'Supabase hr-ocr 尚未關閉 Verify JWT（HTTP 401）';
+      if (aiRes.status === 404) return 'Supabase 尚未部署名為 hr-ocr 的 Edge Function（HTTP 404）';
+      if (aiRes.code === 'MISSING_API_KEY') return 'Supabase Secrets 尚未設定 GEMINI_API_KEY';
+      if (aiRes.code === 'GEMINI_API_ERROR') return `Gemini API 回報錯誤：${String(aiRes.error || aiRes.status || '').slice(0, 120)}`;
+      if (aiRes.code === 'NETWORK_ERROR' && /abort/i.test(String(aiRes.error || ''))) return 'AI 辨識逾時（請更新最新版 hr-ocr 程式以關閉思考延遲）';
+      return aiRes.error || aiRes.code || '雲端 AI 辨識暫時無法使用';
+    }
+
+    async function callCloudAiVisionOcr(docType, resizedDataUrl, extraBody) {
       const baseUrl = String((App.cloud && App.cloud.url) || DEFAULT_CLOUD_CONFIG.url || '').replace(/\/+$/, '');
       const anonKey = String((App.cloud && App.cloud.anonKey) || DEFAULT_CLOUD_CONFIG.anonKey || '');
-      if (!baseUrl || !anonKey) return { ok: false, code: 'NO_CLOUD' };
-      const mimeMatch = String(resizedDataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
-      const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      if (!baseUrl || !anonKey) return { ok: false, code: 'NO_CLOUD', error: '尚未設定 Supabase 連線' };
+      const payload = extraBody && extraBody.ping
+        ? { ping: true }
+        : (() => {
+            const mimeMatch = String(resizedDataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+            const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+            return { docType, imageBase64: resizedDataUrl, mimeType };
+          })();
       try {
         const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = ctrl ? setTimeout(() => ctrl.abort(), 14000) : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 25000) : null;
         const res = await fetch(`${baseUrl}/functions/v1/hr-ocr`, {
           method: 'POST',
           headers: {
@@ -4057,7 +4072,7 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
             'apikey': anonKey,
             'Authorization': `Bearer ${anonKey}`,
           },
-          body: JSON.stringify({ docType, imageBase64: resizedDataUrl, mimeType }),
+          body: JSON.stringify(payload),
           signal: ctrl ? ctrl.signal : undefined,
         });
         if (timer) clearTimeout(timer);
@@ -4066,10 +4081,29 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
         if (!res.ok || !data.ok) {
           return { ok: false, status: res.status, code: data.code || ('HTTP_' + res.status), error: data.error || '' };
         }
-        return { ok: true, engine: data.engine || 'gemini', data: data.data || {} };
+        return { ok: true, engine: data.engine || 'gemini', data: data.data || {}, message: data.message || '' };
       } catch (err) {
         return { ok: false, code: 'NETWORK_ERROR', error: err && err.message ? err.message : String(err) };
       }
+    }
+
+    async function testCloudAiOcrConnection() {
+      App.hr.ocrStatusMsg = '⏳ 正在測試 Gemini AI 視覺辨識連線…';
+      App.hr.ocrStatusOk = null;
+      App.toast = '⏳ 正在測試 AI 證件辨識連線…';
+      render();
+      const res = await callCloudAiVisionOcr('', '', { ping: true });
+      if (res.ok) {
+        App.hr.ocrStatusOk = true;
+        App.hr.ocrStatusMsg = `🟢 AI 視覺辨識已就緒（${res.engine}）`;
+        App.toast = `✅ ${res.message || 'Gemini AI 證件辨識已成功連線'}！現在拍照上傳身分證／存摺即可精準辨識。`;
+      } else {
+        const reason = explainCloudOcrFailure(res);
+        App.hr.ocrStatusOk = false;
+        App.hr.ocrStatusMsg = `🔴 雲端 AI 未連線：${reason}`;
+        App.toast = `❌ AI 證件辨識連線失敗：${reason}`;
+      }
+      render();
     }
 
     function normalizeFullwidthDigits(str) {
@@ -4282,9 +4316,11 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           const aiRes = await callCloudAiVisionOcr(docType, resizedDataUrl);
           if (aiRes.ok && aiRes.data) {
             const foundAi = applyExtractedHrFields(docType, aiRes.data);
+            App.hr.ocrStatusOk = true;
+            App.hr.ocrStatusMsg = `🟢 AI 視覺辨識運作中（${aiRes.engine || 'gemini'}）`;
             App.hr.scanningDoc = null;
             App.toast = foundAi.length > 0
-              ? `✨ AI 視覺辨識完成，已自動填入：${foundAi.join('、')}（請核對確認）。`
+              ? `✨ AI 視覺辨識完成（${aiRes.engine || 'gemini'}），已自動填入：${foundAi.join('、')}（請核對確認）。`
               : '照片已加密儲存（此張圖片模糊或非對應證件，請重拍清晰正面或手動填寫）。';
             render();
             updateHrLiveSummary();
@@ -4292,7 +4328,10 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
           }
 
           // 引擎 2（自動備援）：本機對比強化 Tesseract.js（繁中＋純英數雙通道）
-          App.toast = '⏳ 正在使用本機影像強化辨識證件文字（約 3–6 秒）…';
+          const failReason = explainCloudOcrFailure(aiRes);
+          App.hr.ocrStatusOk = false;
+          App.hr.ocrStatusMsg = `🔴 雲端 AI 辨識未啟用／失敗：${failReason}`;
+          App.toast = `⚠️ 雲端 AI 未連線（${failReason}），暫改用本機備援辨識…`;
           render();
           const T = await ensureTesseractLoaded();
           const resZh = await T.recognize(enhancedDataUrl, 'chi_tra+eng');
@@ -4307,11 +4346,9 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
 
           App.hr.scanningDoc = null;
           if (foundLocal.length > 0) {
-            App.toast = `✅ 本機辨識完成，已填入：${foundLocal.join('、')}（請核對確認）。`;
-          } else if (aiRes.status === 404 || aiRes.code === 'MISSING_API_KEY') {
-            App.toast = '照片已加密儲存。台灣身分證底紋較複雜導致本機無法辨識，建議部署免費 AI 視覺辨識（hr-ocr）即可精準讀取，或先手動填寫。';
+            App.toast = `⚠️ 目前為低準確率「本機備援辨識」（雲端 AI 失敗原因：${failReason}），僅辨識出：${foundLocal.join('、')}。`;
           } else {
-            App.toast = '照片已加密儲存（此張反光或底紋較深未辨識出文字，請將證件平放光線充足處重拍或手動填寫）。';
+            App.toast = `❌ 雲端 AI 辨識失敗（${failReason}），且本機備援無法讀取此張證件；請點擊上方「測試 AI 辨識連線」排查。`;
           }
           render();
           updateHrLiveSummary();
@@ -7067,8 +7104,16 @@ grant execute on function public.liff_delete_binding(text) to anon, authenticate
                     <button type="button" onclick="App.hr.form.nationalityType='LOCAL';App.hr.form.nationality='中華民國 (台灣)';App.hr.form.foreignStatusType='';App.hr.form.isTaxResident183Days=true;if(!App.hr.form.roleTitle||App.hr.form.roleTitle.includes('外籍'))App.hr.form.roleTitle=(App.hr.form.type==='PT'?'計時夥伴':'正職夥伴');render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${!isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">本國籍員工</button>
                     <button type="button" onclick="App.hr.form.nationalityType='FOREIGN';if(App.hr.form.nationality==='中華民國 (台灣)')App.hr.form.nationality='越南 (Vietnam)';if(!App.hr.form.foreignStatusType)App.hr.form.foreignStatusType='STUDENT_PT';if(!App.hr.form.roleTitle||App.hr.form.roleTitle==='正職夥伴'||App.hr.form.roleTitle==='計時夥伴')App.hr.form.roleTitle=(App.hr.form.type==='PT'?'外籍計時夥伴':'外籍正職夥伴');render()" class="h-8 px-3 rounded-lg border font-semibold cursor-pointer ${isF?'bg-[#0F766E] text-white border-[#0F766E]':'bg-white border-slate-200 text-slate-700'}">外籍員工</button>
                   </div>
-                  ${App.hr.editingId ? `<button type="button" onclick="App.hr.editingId=null;App.hr.form=makeEmptyHrForm('LOCAL');render()" class="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-semibold cursor-pointer">取消編輯 (${f.name})</button>` : ''}
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <button type="button" onclick="testCloudAiOcrConnection()" class="h-7 px-2.5 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-[#0F766E] font-bold cursor-pointer">🔍 測試 AI 辨識連線</button>
+                    ${App.hr.editingId ? `<button type="button" onclick="App.hr.editingId=null;App.hr.form=makeEmptyHrForm('LOCAL');render()" class="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-semibold cursor-pointer">取消編輯 (${f.name})</button>` : ''}
+                  </div>
                 </div>
+                ${App.hr.ocrStatusMsg ? `
+                  <div class="px-3 py-2 rounded-lg border text-[11px] font-semibold ${App.hr.ocrStatusOk === true ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : App.hr.ocrStatusOk === false ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-slate-50 border-slate-200 text-slate-700'}">
+                    ${App.hr.ocrStatusMsg}
+                  </div>
+                ` : ''}
                 ${isF ? `<div class="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 font-medium">${stMeta.note}</div>` : ''}
               </div>
 
